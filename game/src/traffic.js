@@ -1,134 +1,106 @@
-// Solmar City — traffic: cars that follow the road grid, keep their lane,
-// stop for the car ahead, and honk when blocked. They despawn off-screen
-// and respawn to keep the streets alive. Any traffic car can be stolen.
-import { ROADS } from './config.js';
-import { spawnCar, stepCar } from './vehicles.js';
-import { pick, range, rangeInt } from './random.js';
+// Traffic: cars that follow the road grid on waypoint loops, keep their lane, brake
+// when blocked and honk. They despawn far away and respawn to keep the count steady.
+import * as THREE from 'three';
+import { AVENUES, CAR_MODELS, STREETS } from './config.js';
+import { pick, range } from './random.js';
+import { removeCar, spawnCar } from './vehicles.js';
 
-const TRAFFIC_MODELS = ['alba', 'meridian', 'taxi', 'dune', 'meridian', 'alba'];
 const TRAFFIC_COUNT = 14;
+const TRAFFIC_SPEED = 9;
+const MODELS = ['alba', 'meridian', 'vela', 'dune', 'taxi'];
 
-function laneOffset(line, dir) {
-  // Right-hand traffic: offset to the right of the travel direction.
-  return line.axis === 'x' ? { x: 0, z: dir * 3.5 } : { x: dir * 3.5, z: 0 };
+function makeLoop(rng) {
+  // A rectangle loop around one block, on real roads.
+  const vertical = pick(rng, AVENUES);
+  const horizontal = pick(rng, STREETS);
+  const v2 = vertical + (rng() < 0.5 ? -120 : 120);
+  const h2 = horizontal + (rng() < 0.5 ? -120 : 120);
+  const cx = Math.max(-240, Math.min(240, v2));
+  const cz = Math.max(-240, Math.min(240, h2));
+  return [
+    new THREE.Vector3(vertical, 0, horizontal),
+    new THREE.Vector3(cx, 0, horizontal),
+    new THREE.Vector3(cx, 0, cz),
+    new THREE.Vector3(vertical, 0, cz),
+  ];
 }
 
-export function initTraffic(G) {
-  G.traffic = [];
-  for (let i = 0; i < TRAFFIC_COUNT; i += 1) spawnTrafficCar(G, true);
-}
-
-function randomRoute(G) {
-  const line = pick(G.rng, G.roadLines);
-  const dir = G.rng() < 0.5 ? 1 : -1;
-  const t = range(G.rng, -260, 260);
-  const off = laneOffset(line, dir);
-  const x = line.axis === 'x' ? t : line.at + off.x;
-  const z = line.axis === 'x' ? line.at + off.z : t;
-  const heading = line.axis === 'x' ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir > 0 ? 0 : Math.PI);
-  return { line, dir, x, z, heading };
-}
-
-function spawnTrafficCar(G, anywhere) {
-  const model = pick(G.rng, TRAFFIC_MODELS);
-  const route = randomRoute(G);
-  const car = spawnCar(G, model, route.x, route.z, route.heading, {
-    driver: 'traffic',
-    color: pick(G.rng, [0xd94f3d, 0x3d7fd9, 0x3dd9a0, 0xf2c94c, 0xe8e8e8, 0x8a5ac8, 0x5a8a3d, 0xd98a3d]),
-  });
-  car.route = route;
-  car.cruise = range(G.rng, 12, 20);
-  car.honk = 0;
-  if (!anywhere) {
-    // Respawn far from the player so cars pop in off-screen.
-    const px = G.player.x;
-    const pz = G.player.z;
-    if (Math.hypot(car.x - px, car.z - pz) < 90) {
-      car.x = px + (car.x < px ? -160 : 160);
-      car.z = pz + (car.z < pz ? -160 : 160);
-    }
+export function createTraffic(G) {
+  const traffic = { cars: [], loops: new Map() };
+  for (let i = 0; i < TRAFFIC_COUNT; i += 1) {
+    const loop = makeLoop(G.rng);
+    const car = spawnCar(G, pick(G.rng, MODELS), loop[0].x + range(G.rng, -2, 2), loop[0].z + range(G.rng, -2, 2), 0, { driver: 'traffic' });
+    traffic.cars.push(car);
+    traffic.loops.set(car.id, { points: loop, index: 1, speed: range(G.rng, 7, 11) });
   }
-  G.traffic.push(car);
-  return car;
-}
-
-/** Pick a new road at the next intersection: keep going or turn. */
-function nextLeg(G, car) {
-  const line = car.route.line;
-  const dir = car.route.dir;
-  // At the end of the grid, turn around; at intersections, sometimes turn.
-  const along = line.axis === 'x' ? car.x : car.z;
-  if (along * dir > 270 || (G.rng() < 0.35 && Math.abs(along % 120) < 12)) {
-    const cross = pick(G.rng, G.roadLines.filter((l) => l.axis !== line.axis));
-    const at = line.axis === 'x' ? car.z : car.x;
-    const newDir = G.rng() < 0.5 ? 1 : -1;
-    const off = laneOffset(cross, newDir);
-    car.route = {
-      line: cross,
-      dir: newDir,
-      x: cross.axis === 'x' ? car.x : cross.at + off.x,
-      z: cross.axis === 'x' ? cross.at + off.z : car.z,
-      heading: cross.axis === 'x' ? (newDir > 0 ? Math.PI / 2 : -Math.PI / 2) : (newDir > 0 ? 0 : Math.PI),
-    };
-    void at;
-  }
-}
-
-function carAhead(G, car) {
-  const fx = Math.sin(car.heading);
-  const fz = Math.cos(car.heading);
-  let best = Infinity;
-  for (const other of G.cars) {
-    if (other === car || other.driver === 'player') continue;
-    const dx = other.x - car.x;
-    const dz = other.z - car.z;
-    const forward = dx * fx + dz * fz;
-    const side = Math.abs(dx * fz - dz * fx);
-    if (forward > 0 && forward < 14 && side < 3) best = Math.min(best, forward);
-  }
-  return best;
+  return traffic;
 }
 
 export function stepTraffic(G, dt) {
-  const p = G.player;
-  for (let i = G.traffic.length - 1; i >= 0; i -= 1) {
-    const car = G.traffic[i];
-    // Player stole it: it leaves the traffic pool.
-    if (car.driver === 'player' || car.driver === null) {
-      G.traffic.splice(i, 1);
+  const player = G.player;
+  const playerPos = player.inCar ? player.inCar.mesh.position : player.mesh.position;
+  for (const car of [...G.traffic.cars]) {
+    const loop = G.traffic.loops.get(car.id);
+    if (!loop) continue;
+    const target = loop.points[loop.index];
+    const dx = target.x - car.mesh.position.x;
+    const dz = target.z - car.mesh.position.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 4) {
+      loop.index = (loop.index + 1) % loop.points.length;
       continue;
     }
-    // Too far away: recycle to keep the count steady.
-    if (Math.hypot(car.x - p.x, car.z - p.z) > 320) {
-      G.scene.remove(car.mesh);
-      G.cars.splice(G.cars.indexOf(car), 1);
-      G.traffic.splice(i, 1);
-      spawnTrafficCar(G, false);
-      continue;
-    }
-    nextLeg(G, car);
-    const ahead = carAhead(G, car);
-    const wantSpeed = ahead < 12 ? 0 : car.cruise;
-    const throttle = car.speed < wantSpeed ? 1 : 0;
-    if (ahead < 9 && car.honk <= 0) {
-      car.honk = 2.5;
-      G.audio.honk(G);
-    }
-    car.honk -= dt;
-    // Steer toward the lane centre.
-    const route = car.route;
-    const off = laneOffset(route.line, route.dir);
-    const targetX = route.line.axis === 'x' ? car.x : route.line.at + off.x;
-    const targetZ = route.line.axis === 'x' ? route.line.at + off.z : car.z;
-    const wantHeading = Math.atan2(targetX - car.x, targetZ - car.z);
+    const wantHeading = Math.atan2(dx, dz);
     let dh = wantHeading - car.heading;
     while (dh > Math.PI) dh -= Math.PI * 2;
     while (dh < -Math.PI) dh += Math.PI * 2;
     car.heading += Math.max(-1.6 * dt, Math.min(1.6 * dt, dh));
-    stepCar(G, car, dt, throttle, 0, false);
-    // stepCar steers by heading already; keep the mesh aligned.
+    // Brake when something is right ahead: another car, or the player.
+    let blocked = false;
+    const aheadX = car.mesh.position.x + Math.sin(car.heading) * 7;
+    const aheadZ = car.mesh.position.z + Math.cos(car.heading) * 7;
+    for (const other of G.cars) {
+      if (other === car) continue;
+      if (Math.hypot(other.mesh.position.x - aheadX, other.mesh.position.z - aheadZ) < 3.4) { blocked = true; break; }
+    }
+    if (!blocked && Math.hypot(playerPos.x - aheadX, playerPos.z - aheadZ) < 3) blocked = true;
+    const wantSpeed = blocked ? 0 : loop.speed;
+    car.speed += (wantSpeed - car.speed) * Math.min(1, dt * 1.6);
+    car.mesh.position.x += Math.sin(car.heading) * car.speed * dt;
+    car.mesh.position.z += Math.cos(car.heading) * car.speed * dt;
     car.mesh.rotation.y = car.heading;
+    const spin = car.speed * dt * 2.4;
+    for (const w of car.wheels) w.rotation.x += spin;
+    // Honk at the player when they block the road.
+    if (blocked && Math.hypot(playerPos.x - car.mesh.position.x, playerPos.z - car.mesh.position.z) < 9 && Math.random() < dt * 0.2) {
+      G.audio.horn();
+    }
+    // Respawn far from the player so the streets never empty out.
+    const pd = Math.hypot(car.mesh.position.x - playerPos.x, car.mesh.position.z - playerPos.z);
+    if (pd > 260) {
+      const loop2 = makeLoop(G.rng);
+      car.mesh.position.set(loop2[0].x, 0, loop2[0].z);
+      G.traffic.loops.set(car.id, { points: loop2, index: 1, speed: range(G.rng, 7, 11) });
+    }
   }
-  // Keep the pool topped up.
-  while (G.traffic.length < TRAFFIC_COUNT) spawnTrafficCar(G, false);
 }
+
+// A stolen traffic car throws its driver out: the driver becomes a fleeing pedestrian.
+export function ejectDriver(G, car) {
+  G.traffic.cars = G.traffic.cars.filter((c) => c !== car);
+  G.traffic.loops.delete(car.id);
+  G.pedestrians.spawnWalker(G, car.mesh.position.x + 2, car.mesh.position.z + 2, 'flee');
+  // A fresh traffic car joins elsewhere to keep the count.
+  const loop = makeLoop(G.rng);
+  const fresh = spawnCar(G, pick(G.rng, MODELS), loop[0].x, loop[0].z, 0, { driver: 'traffic' });
+  G.traffic.cars.push(fresh);
+  G.traffic.loops.set(fresh.id, { points: loop, index: 1, speed: range(G.rng, 7, 11) });
+}
+
+export function removeTrafficCar(G, car) {
+  G.traffic.cars = G.traffic.cars.filter((c) => c !== car);
+  G.traffic.loops.delete(car.id);
+  removeCar(G, car);
+}
+
+export { CAR_MODELS };

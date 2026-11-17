@@ -1,104 +1,97 @@
-// Solmar City — effects: particles (sparks, smoke, muzzle flash, explosion
-// bursts), hitscan tracers, hitmarker pop, damage vignette flash, skid marks.
+// Particles, muzzle flashes, smoke, skid marks and the damage vignette.
+// One pooled THREE.Points cloud plus a few reusable meshes — no per-frame allocations.
+import * as THREE from 'three';
 
-export function createEffects(G) {
+const MAX_PARTICLES = 400;
+
+export function createEffects(scene) {
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(MAX_PARTICLES * 3);
+  const colors = new Float32Array(MAX_PARTICLES * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.PointsMaterial({ size: 0.7, vertexColors: true, transparent: true, opacity: 0.9, depthWrite: false });
+  const points = new THREE.Points(geo, mat);
+  points.frustumCulled = false;
+  scene.add(points);
+  const parts = [];
+  for (let i = 0; i < MAX_PARTICLES; i += 1) {
+    parts.push({ alive: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 0, max: 1, r: 1, g: 1, b: 1 });
+  }
+  let cursor = 0;
+
+  // Skid marks: dark quads that fade out.
+  const skids = [];
+  const skidGeo = new THREE.PlaneGeometry(0.35, 1.4);
+  const skidMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a, transparent: true, opacity: 0.55, depthWrite: false });
+  for (let i = 0; i < 120; i += 1) {
+    const m = new THREE.Mesh(skidGeo, skidMat.clone());
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = 0.02;
+    m.visible = false;
+    scene.add(m);
+    skids.push({ mesh: m, life: 0 });
+  }
+  let skidCursor = 0;
+
+  function spawn(x, y, z, vx, vy, vz, life, r, g, b) {
+    const p = parts[cursor];
+    cursor = (cursor + 1) % MAX_PARTICLES;
+    p.alive = true; p.x = x; p.y = y; p.z = z; p.vx = vx; p.vy = vy; p.vz = vz;
+    p.life = life; p.max = life; p.r = r; p.g = g; p.b = b;
+  }
+
   return {
-    particles: [],
-    tracers: [],
-    hitTimer: 0,
-    pool: [],
+    burst(pos, color, count, speed, up) {
+      const c = new THREE.Color(color);
+      for (let i = 0; i < count; i += 1) {
+        const a = Math.random() * Math.PI * 2;
+        const s = speed * (0.4 + Math.random() * 0.6);
+        spawn(pos.x, pos.y, pos.z, Math.cos(a) * s, (up || 2) * Math.random(), Math.sin(a) * s, 0.4 + Math.random() * 0.5, c.r, c.g, c.b);
+      }
+    },
+    smoke(pos, count) {
+      for (let i = 0; i < count; i += 1) {
+        spawn(pos.x + (Math.random() - 0.5), pos.y + Math.random() * 0.5, pos.z + (Math.random() - 0.5),
+          (Math.random() - 0.5) * 0.6, 0.8 + Math.random(), (Math.random() - 0.5) * 0.6,
+          0.9 + Math.random() * 0.8, 0.55, 0.55, 0.55);
+      }
+    },
+    muzzle(pos, dir) {
+      const c = new THREE.Color(0xffc94c);
+      for (let i = 0; i < 6; i += 1) {
+        spawn(pos.x, pos.y, pos.z, dir.x * 14 + (Math.random() - 0.5) * 3, dir.y * 14 + 1, dir.z * 14 + (Math.random() - 0.5) * 3, 0.12, c.r, c.g, c.b);
+      }
+    },
+    skid(x, z, heading) {
+      const s = skids[skidCursor];
+      skidCursor = (skidCursor + 1) % skids.length;
+      s.mesh.position.set(x, 0.02, z);
+      s.mesh.rotation.z = -heading;
+      s.mesh.visible = true;
+      s.life = 6;
+    },
+    update(dt) {
+      for (let i = 0; i < MAX_PARTICLES; i += 1) {
+        const p = parts[i];
+        if (!p.alive) { positions[i * 3 + 1] = -100; continue; }
+        p.life -= dt;
+        if (p.life <= 0) { p.alive = false; positions[i * 3 + 1] = -100; continue; }
+        p.vy -= 6 * dt;
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        if (p.y < 0.05) { p.y = 0.05; p.vy = 0; }
+        positions[i * 3] = p.x; positions[i * 3 + 1] = p.y; positions[i * 3 + 2] = p.z;
+        const fade = p.life / p.max;
+        colors[i * 3] = p.r * fade; colors[i * 3 + 1] = p.g * fade; colors[i * 3 + 2] = p.b * fade;
+      }
+      geo.attributes.position.needsUpdate = true;
+      geo.attributes.color.needsUpdate = true;
+      for (const s of skids) {
+        if (!s.mesh.visible) continue;
+        s.life -= dt;
+        if (s.life <= 0) s.mesh.visible = false;
+        else s.mesh.material.opacity = 0.55 * Math.min(1, s.life / 2);
+      }
+    },
   };
-}
-
-function spawnParticle(G, x, y, z, vx, vy, vz, life, size, color) {
-  const fx = G.effects;
-  let mesh = fx.pool.pop();
-  if (!mesh) {
-    mesh = new G.THREE.Mesh(
-      new G.THREE.BoxGeometry(1, 1, 1),
-      new G.THREE.MeshBasicMaterial({ color: 0xffffff }),
-    );
-  }
-  mesh.material.color.setHex(color);
-  mesh.position.set(x, y, z);
-  mesh.scale.setScalar(size);
-  mesh.visible = true;
-  G.scene.add(mesh);
-  fx.particles.push({ mesh, vx, vy, vz, life, maxLife: life });
-}
-
-export function spark(G, x, z) {
-  for (let i = 0; i < 10; i += 1) {
-    spawnParticle(G, x, 0.8, z, (G.rng() - 0.5) * 10, G.rng() * 6, (G.rng() - 0.5) * 10, 0.4, 0.12, 0xffc94c);
-  }
-}
-
-export function smoke(G, x, z) {
-  spawnParticle(G, x, 1.2, z, (G.rng() - 0.5) * 2, 2.5, (G.rng() - 0.5) * 2, 1.1, 0.5, 0x666666);
-}
-
-export function burst(G, x, z) {
-  for (let i = 0; i < 16; i += 1) {
-    spawnParticle(G, x, 1.2, z, (G.rng() - 0.5) * 8, G.rng() * 5, (G.rng() - 0.5) * 8, 0.7, 0.18, i % 2 ? 0xff6b4a : 0xf2c94c);
-  }
-}
-
-export function muzzle(G, pos) {
-  for (let i = 0; i < 4; i += 1) {
-    spawnParticle(G, pos.x, pos.y, pos.z, (G.rng() - 0.5) * 4, (G.rng() - 0.5) * 4, (G.rng() - 0.5) * 4, 0.12, 0.25, 0xffe8a0);
-  }
-}
-
-export function tracer(G, from, to) {
-  const geo = new G.THREE.BufferGeometry().setFromPoints([from, to]);
-  const line = new G.THREE.Line(geo, new G.THREE.LineBasicMaterial({ color: 0xffe8a0, transparent: true, opacity: 0.9 }));
-  G.scene.add(line);
-  G.effects.tracers.push({ line, life: 0.09 });
-}
-
-export function hitmarker(G) {
-  G.effects.hitTimer = 0.25;
-  const el = document.getElementById('hitmarker');
-  if (el) {
-    el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 200);
-  }
-}
-
-export function damageFlash(G) {
-  const el = document.getElementById('vignette');
-  if (el) {
-    el.classList.add('hurt');
-    setTimeout(() => el.classList.remove('hurt'), 300);
-  }
-}
-
-export function stepEffects(G, dt) {
-  const fx = G.effects;
-  for (let i = fx.particles.length - 1; i >= 0; i -= 1) {
-    const pt = fx.particles[i];
-    pt.life -= dt;
-    if (pt.life <= 0) {
-      G.scene.remove(pt.mesh);
-      pt.mesh.visible = false;
-      fx.pool.push(pt.mesh);
-      fx.particles.splice(i, 1);
-      continue;
-    }
-    pt.mesh.position.x += pt.vx * dt;
-    pt.mesh.position.y += pt.vy * dt;
-    pt.mesh.position.z += pt.vz * dt;
-    pt.vy -= 6 * dt;
-    pt.mesh.scale.setScalar(Math.max(0.01, pt.life / pt.maxLife) * 0.5);
-  }
-  for (let i = fx.tracers.length - 1; i >= 0; i -= 1) {
-    const t = fx.tracers[i];
-    t.life -= dt;
-    if (t.life <= 0) {
-      G.scene.remove(t.line);
-      t.line.geometry.dispose();
-      fx.tracers.splice(i, 1);
-    }
-  }
-  if (fx.hitTimer > 0) fx.hitTimer -= dt;
 }

@@ -1,133 +1,41 @@
-// Solmar City — boot, the fixed-step 60 Hz loop, screens (title / play /
-// paused / busted-wasted), interactions (enter car, shops, weapons, reload)
-// and the ?shot= capture modes that stage a scene and set __shotReady.
+// Solmar City — boot, fixed-step loop, screens, interactions and shot capture modes.
+// The game moves between title / play / paused / over; the world behind the title
+// screen stays alive so the menu shows the real city.
 import * as THREE from 'three';
-import { STEP, CARS, WEAPONS, MISSIONS, HARDWARE_POS, MOTORS_POS, WANTED } from './config.js';
+import { STEP, WEAPONS } from './config.js';
 import { createRandom } from './random.js';
-import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_ENTER, ACTION_PUNCH, ACTION_RELOAD, ACTION_JUMP } from './input.js';
-import { applyPaletteToDocument } from './palette.js';
+import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_ENTER, ACTION_PUNCH, ACTION_RELOAD, ACTION_MUTE, ACTION_CLICK } from './input.js';
 import { buildCity } from './city.js';
-import { createPlayer, buildPlayerMesh, stepPlayer, animatePlayerMesh } from './player.js';
-import { spawnCar, stepCar, nearestCar, enterCar, exitCar } from './vehicles.js';
-import { initTraffic, stepTraffic } from './traffic.js';
-import { initPedestrians, stepPedestrians, scarePeds } from './pedestrians.js';
-import { createPolice, stepPolice, policeHeat } from './police.js';
-import { createCombat, stepCombat, playerShoot, spawnEnemy } from './combat.js';
-import { createMissions, initMissionWorld, startMission, stepMissions, stepTaxi, startTaxiFare, currentMission } from './missions.js';
-import * as missionsMod from './missions.js';
-import { createHud, updateHud, flash, setObjective, tick } from './hud.js';
-import { createCamera, updateCamera } from './camera.js';
-import * as effectsMod from './effects.js';
-import * as audioMod from './audio.js';
-import { createSave } from './save.js';
+import { createPlayer, stepPlayer } from './player.js';
+import { createCamera, stepCamera } from './camera.js';
+import { createTraffic, stepTraffic, ejectDriver } from './traffic.js';
+import { createPedestrians, stepPedestrians, spawnWalker, fleeFrom } from './pedestrians.js';
+import { createPolice, stepPolice } from './police.js';
+import { spawnCar, driveCar, nearestCar, exitCar, trySteal } from './vehicles.js';
+import { createCombat, playerShoot, playerPunch, reloadWeapon, stepCombat, stepPickups } from './combat.js';
+import { createMissions } from './missions.js';
+import { createHud } from './hud.js';
+import { createEffects } from './effects.js';
+import { createAudio } from './audio.js';
+import { loadSave, storeSave, clearSave } from './save.js';
 import { stageShot } from './shots.js';
 
 const MAX_FRAME = 0.25;
+
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
 const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
 const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
 
-applyPaletteToDocument();
-
 const canvas = document.getElementById('game');
 const status = document.getElementById('status');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
-
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1200);
-
-const G = {
-  THREE,
-  scene,
-  camera,
-  renderer,
-  rng: createRandom(seed),
-  time: 0,
-  cash: 500,
-  wanted: 0,
-  policeNear: false,
-  cars: [],
-  peds: [],
-  traffic: [],
-  nextCarId: 1,
-  colliders: [],
-  roadLines: [],
-  intersections: [],
-  markers: [],
-  ownedCars: ['meridian'],
-  bestTimes: {},
-  screen: 'title',
-  jumpQueued: false,
-  punchQueued: false,
-  hotwiring: null,
-  freezeCam: false,
-  gameOverKind: null,
-};
-
-G.input = createInput(canvas);
-G.player = createPlayer(G);
-// Debug handle for play-testing (read-only state inspection from the console).
-window.__solmar = G;
-G.police = createPolice(G);
-G.combat = createCombat(G);
-G.missions = Object.assign(createMissions(G), {
-  failStep: (g, reason) => missionsMod.failStep(g, reason),
-  start: (g, i) => startMission(g, i),
-  onShotFired: (g) => missionsMod.onShotFired(g),
-  onEnemyKilled: (g, e) => missionsMod.onEnemyKilled(g, e),
-});
-G.effects = Object.assign(effectsMod.createEffects(G), {
-  spark: effectsMod.spark,
-  smoke: effectsMod.smoke,
-  burst: effectsMod.burst,
-  muzzle: effectsMod.muzzle,
-  tracer: effectsMod.tracer,
-  hitmarker: effectsMod.hitmarker,
-  damageFlash: effectsMod.damageFlash,
-  step: effectsMod.stepEffects,
-});
-G.audio = Object.assign(audioMod.createAudio(G), {
-  shot: audioMod.shot,
-  swing: audioMod.swing,
-  hit: audioMod.hit,
-  thud: audioMod.thud,
-  chime: audioMod.chime,
-  click: audioMod.click,
-  door: audioMod.door,
-  hurt: audioMod.hurt,
-  honk: audioMod.honk,
-  siren: audioMod.siren,
-  sting: audioMod.sting,
-  updateEngine: audioMod.updateEngine,
-});
-G.save = createSave(G);
-G.hud = { flash, setObjective, tick };
-G.player.mesh = buildPlayerMesh(G);
-
-buildCity(G);
-createCamera(G);
-initTraffic(G);
-initPedestrians(G);
-initMissionWorld(G);
-createHud(G);
-
-// Parked cars the player can steal, parked at the roadside (just off the
-// asphalt so traffic keeps flowing), spread across the districts.
-const PARKED = [
-  ['alba', -111, 200, 0], ['meridian', 60, -111, Math.PI / 2], ['vela', -200, 130, 0],
-  ['hauler', 200, 130, Math.PI], ['dune', -60, -231, Math.PI / 2], ['taxi', 129, 60, 0],
-  ['taxi', -180, -111, Math.PI], ['meridian', 249, 129, -Math.PI / 2], ['alba', 9, 249, 0],
-];
-for (const [model, x, z, h] of PARKED) spawnCar(G, model, x, z, h, {});
-// One locked car that needs a 2 s hotwire (press E, stay close).
-const locked = spawnCar(G, 'vela', -160, 231, Math.PI / 2, { locked: true });
-// Juno's own Meridian, parked by the start.
-spawnCar(G, 'meridian', 14, 132, Math.PI, { owned: true });
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 2000);
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -135,302 +43,364 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-function announce(message) {
-  status.textContent = message;
+const G = {
+  scene,
+  three: { scene, camera, renderer },
+  rng: createRandom(seed),
+  time: 0,
+  screen: 'title',
+  cameraShake: 0,
+  cars: [],
+  pickups: [],
+  save: loadSave(),
+};
+G.camera = createCamera(G);
+G.effects = createEffects(scene);
+G.audio = createAudio();
+G.hud = createHud(G);
+buildCity(G);
+G.player = createPlayer(G);
+G.player.ammoByWeapon = {
+  pistol: { mag: 12, reserve: 120 },
+  smg: { mag: 28, reserve: 0 },
+  shotgun: { mag: 6, reserve: 0 },
+};
+G.player.ammo = G.player.ammoByWeapon.pistol;
+G.traffic = createTraffic(G);
+G.traffic.ejectDriver = ejectDriver;
+G.pedestrians = createPedestrians(G);
+G.pedestrians.spawnWalker = spawnWalker;
+G.pedestrians.fleeFrom = fleeFrom;
+G.police = createPolice(G);
+G.combat = createCombat(G);
+G.missions = createMissions(G);
+G.missions.index = G.save.missionsDone.length;
+
+// Player's own Meridian + parked cars to steal around the city.
+spawnCar(G, 'meridian', 4, 66, Math.PI, { driver: null });
+spawnCar(G, 'alba', -116, 64, 0, { driver: null });
+spawnCar(G, 'meridian', 124, -116, Math.PI / 2, { driver: null });
+spawnCar(G, 'vela', -176, 124, 0, { driver: null });
+spawnCar(G, 'dune', 60, -124, 0, { driver: null, locked: true });
+spawnCar(G, 'taxi', -60, 124, Math.PI, { driver: null });
+spawnCar(G, 'taxi', 180, -60, 0, { driver: null });
+spawnCar(G, 'hauler', 176, 124, Math.PI / 2, { driver: null });
+
+function announce(message) { status.textContent = message; }
+
+function syncSave() {
+  G.save.cash = G.player.cash;
+  G.save.playSeconds = Math.floor(G.time);
+  storeSave(G.save);
 }
 
-function showScreen(name) {
-  G.screen = name;
-  for (const id of ['screen-title', 'screen-pause', 'screen-over']) {
-    document.getElementById(id).classList.toggle('on', `screen-${name}` === id);
+function switchWeapon(key) {
+  const p = G.player;
+  const map = { Digit1: 'fists', Digit2: 'pistol', Digit3: 'smg', Digit4: 'shotgun' };
+  const w = map[key];
+  if (!w) return;
+  if (w !== 'fists' && !G.save.weapons.includes(w)) {
+    G.hud.banner(`You don't own the ${WEAPONS[w].name} — buy it at Harbor Hardware.`, '#ff6b4a');
+    return;
   }
-  document.getElementById('hud').classList.toggle('on', name === 'play');
+  p.weapon = w;
+  if (w !== 'fists') p.ammo = p.ammoByWeapon[w];
+  G.audio.click();
+  G.hud.feed(`Weapon: ${WEAPONS[w].name}.`);
 }
-
-function applySave(data) {
-  if (!data) return;
-  G.cash = data.cash ?? 500;
-  G.ownedCars = data.ownedCars ?? ['meridian'];
-  G.missions.done = data.missionsDone ?? [];
-  G.missions.index = data.missionIndex ?? 0;
-  G.missions.packages = data.packages ?? 0;
-  G.bestTimes = data.bestTimes ?? {};
-  const owned = new Set(G.ownedCars);
-  for (const key of Object.keys(WEAPONS)) {
-    if (key !== 'fists' && data.weapons?.includes(key)) {
-      G.player.ammo[key] = { mag: WEAPONS[key].mag, reserve: WEAPONS[key].reserve };
-    }
-  }
-}
-
-function newGame() {
-  G.save.clear();
-  G.cash = 500;
-  G.ownedCars = ['meridian'];
-  G.missions.done = [];
-  G.missions.index = 0;
-  G.missions.packages = 0;
-  G.player.health = 100;
-  G.player.armour = 0;
-  G.player.x = 8;
-  G.player.z = 128;
-  G.player.weapon = 'fists';
-  G.wanted = 0;
-  showScreen('play');
-  startMission(G, 0);
-  announce('Playing Solmar City. Drive to Iris\u2019s caf\u00e9 in Old Town.');
-}
-
-function continueGame() {
-  const data = G.save.read(G);
-  applySave(data);
-  G.player.health = 100;
-  G.player.x = 8;
-  G.player.z = 128;
-  showScreen('play');
-  const mission = currentMission(G);
-  if (mission) startMission(G, G.missions.index);
-  else flash(G, 'Free roam \u2014 all 8 missions done. Solmar is yours.');
-  announce('Continuing Solmar City.');
-}
-
-function quitToMenu() {
-  G.save.write(G);
-  showScreen('title');
-  refreshTitle();
-  announce('Main menu.');
-}
-
-function refreshTitle() {
-  const data = G.save.read(G);
-  document.getElementById('btn-continue').disabled = !data;
-  const done = data?.missionsDone?.length ?? 0;
-  document.getElementById('title-stats').textContent = data
-    ? `Save found: $${(data.cash ?? 0).toLocaleString('en-US')} \u00b7 ${done}/8 missions done \u00b7 ${data.packages ?? 0}/20 packages`
-    : 'No save yet \u2014 start a new game.';
-}
-
-document.getElementById('btn-new').addEventListener('click', newGame);
-document.getElementById('btn-continue').addEventListener('click', continueGame);
-document.getElementById('btn-howto').addEventListener('click', () => {
-  document.getElementById('howto').classList.toggle('on');
-});
-document.getElementById('btn-missions').addEventListener('click', () => {
-  const lines = MISSIONS.map((m) => `${G.missions.done.includes(m.id) ? '\u2713' : '\u25cb'} ${m.id}. ${m.title} \u2014 $${m.reward}`).join('\n');
-  flash(G, lines);
-  document.getElementById('howto').textContent = lines;
-  document.getElementById('howto').classList.add('on');
-});
-document.getElementById('btn-resume').addEventListener('click', () => showScreen('play'));
-document.getElementById('btn-restart').addEventListener('click', () => {
-  if (G.missions.active) startMission(G, G.missions.index);
-  showScreen('play');
-});
-document.getElementById('btn-quit').addEventListener('click', quitToMenu);
-document.getElementById('btn-again').addEventListener('click', () => {
-  G.player.health = 100;
-  showScreen('play');
-});
-document.getElementById('btn-menu').addEventListener('click', quitToMenu);
-
-// Weapon switching (1-4) and reload live here so input.js stays generic.
 window.addEventListener('keydown', (event) => {
-  const keys = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
-  const weapons = ['fists', 'pistol', 'smg', 'shotgun'];
-  const i = keys.indexOf(event.code);
-  if (i >= 0) {
-    const w = weapons[i];
-    if (w === 'fists' || G.player.ammo[w]) {
-      G.player.weapon = w;
-      flash(G, `${WEAPONS[w].name} ready.`);
-    } else {
-      flash(G, `${WEAPONS[w].name} not owned \u2014 buy it at Harbor Hardware.`);
-    }
-  }
+  if (event.code.startsWith('Digit')) switchWeapon(event.code);
 });
 
-function tryInteract() {
+function useNearbyPlace() {
   const p = G.player;
-  if (p.car) { exitCar(G); return; }
-  // Shops: Harbor Hardware (weapons) and Marina Motors (cars).
-  const hd = Math.hypot(p.x - HARDWARE_POS[0], p.z - HARDWARE_POS[1]);
-  if (hd < 8) {
-    const order = ['pistol', 'smg', 'shotgun'];
-    const next = order.find((w) => !G.player.ammo[w]);
-    if (!next) { flash(G, 'Harbor Hardware: you own every weapon.'); return; }
-    if (G.cash >= WEAPONS[next].price) {
-      G.cash -= WEAPONS[next].price;
-      G.player.ammo[next] = { mag: WEAPONS[next].mag, reserve: WEAPONS[next].reserve };
-      G.player.weapon = next;
-      flash(G, `Bought the ${WEAPONS[next].name} for $${WEAPONS[next].price}.`);
-      G.audio.chime(G);
-      G.save.write(G);
-    } else {
-      flash(G, `${WEAPONS[next].name} costs $${WEAPONS[next].price} \u2014 you have $${G.cash}.`);
+  const pos = p.inCar ? p.inCar.mesh.position : p.mesh.position;
+  const L = G.landmarks;
+  const near = (target, r) => Math.hypot(target.x - pos.x, target.z - pos.z) < r;
+  if (near(L.garage, 10)) {
+    if (p.cash < 150) { G.hud.banner('Tune-Up Garage: $150 — you are short.', '#ff6b4a'); return true; }
+    if (G.police.stars === 0 && (!p.inCar || p.inCar.health >= p.inCar.def.durability)) {
+      G.hud.banner('Nothing to fix right now.', '#f4f0e6');
+      return true;
     }
-    return;
-  }
-  const md = Math.hypot(p.x - MOTORS_POS[0], p.z - MOTORS_POS[1]);
-  if (md < 8) {
-    const order = ['alba', 'meridian', 'taxi', 'dune', 'hauler', 'vela'];
-    const next = order.find((m) => !G.ownedCars.includes(m));
-    if (!next) { flash(G, 'Marina Motors: you own every model.'); return; }
-    if (G.cash >= CARS[next].price) {
-      G.cash -= CARS[next].price;
-      G.ownedCars.push(next);
-      spawnCar(G, next, MOTORS_POS[0] + 12, MOTORS_POS[1], Math.PI / 2, { owned: true });
-      flash(G, `Bought the ${CARS[next].name} for $${CARS[next].price}. It is parked outside.`);
-      G.audio.chime(G);
-      G.save.write(G);
-    } else {
-      flash(G, `${CARS[next].name} costs $${CARS[next].price} \u2014 you have $${G.cash}.`);
+    p.cash -= 150;
+    G.save.cash = p.cash;
+    G.police.clearStars();
+    if (p.inCar) {
+      p.inCar.health = p.inCar.def.durability;
+      const colors = p.inCar.def.colors;
+      const c = colors[Math.floor(Math.random() * colors.length)];
+      p.inCar.mesh.children[0].material.color.set(c);
     }
-    return;
+    G.hud.banner('Tune-Up Garage: wanted cleared, car fixed, fresh paint. -$150', '#3ad86b');
+    G.audio.pickup();
+    return true;
   }
-  // Otherwise: enter / steal the nearest car.
-  const car = nearestCar(G, p.x, p.z);
-  if (!car) return;
-  if (car.locked && car.hotwire < 2) {
-    G.hotwiring = car;
-    flash(G, 'Locked \u2014 hotwiring\u2026 stay close (2 s).');
-    return;
+  if (near(L.hardware, 10)) {
+    const shop = [
+      { key: 'smg', price: 900, name: 'Hornet-9 SMG' },
+      { key: 'shotgun', price: 700, name: 'Boomstick shotgun' },
+    ];
+    for (const item of shop) {
+      if (!G.save.weapons.includes(item.key)) {
+        if (p.cash < item.price) { G.hud.banner(`Harbor Hardware: ${item.name} costs $${item.price}.`, '#ff6b4a'); return true; }
+        p.cash -= item.price;
+        G.save.cash = p.cash;
+        G.save.weapons.push(item.key);
+        G.hud.banner(`Bought the ${item.name}! Press 3 or 4 to equip.`, '#3ad86b');
+        G.audio.pickup();
+        return true;
+      }
+    }
+    G.hud.banner('Harbor Hardware: you own everything. Ammo restocked $50.', '#f4f0e6');
+    if (p.cash >= 50) { p.cash -= 50; p.ammoByWeapon.pistol.reserve += 120; p.ammoByWeapon.smg.reserve += 140; p.ammoByWeapon.shotgun.reserve += 24; G.save.cash = p.cash; }
+    return true;
   }
-  if (enterCar(G, car)) {
-    flash(G, `Driving the ${car.def.name}.`);
-    if (car.driver === 'player' && G.wanted === 0 && car.model === 'taxi') startTaxiFare(G);
-  }
+  return false;
 }
 
-function step(dt) {
-  const input = G.input;
-  const p = G.player;
-  const actions = input.takeActions();
-  if (actions & ACTION_JUMP) G.jumpQueued = true;
-  if (actions & ACTION_PUNCH) G.punchQueued = true;
-  if (actions & ACTION_PAUSE) {
-    if (G.screen === 'play') showScreen('pause');
-    else if (G.screen === 'pause') showScreen('play');
-  }
-  if (actions & ACTION_ENTER) tryInteract();
-  if (actions & ACTION_RELOAD) {
-    const w = WEAPONS[p.weapon];
-    const ammo = p.ammo[p.weapon];
-    if (ammo && w.mag !== Infinity && ammo.mag < w.mag && ammo.reserve > 0) {
-      const need = w.mag - ammo.mag;
-      const take = Math.min(need, ammo.reserve);
-      ammo.mag += take;
-      ammo.reserve -= take;
-      G.audio.click(G);
-    }
-  }
-  // Hold E on a locked car to hotwire it (2 s): the one-shot E press starts
-  // the timer, and the loop below finishes it while the player stays close.
-  const near = nearestCar(G, p.x, p.z);
-  if (near && near.locked && !p.car && G.hotwiring === near) {
-    near.hotwire += dt;
-    if (near.hotwire >= 2) {
-      near.locked = false;
-      flash(G, 'Hotwired! The car is yours.');
-      G.audio.chime(G);
-    }
-  } else if (G.hotwiring && G.hotwiring !== near) {
-    G.hotwiring.hotwire = 0;
-    G.hotwiring = null;
-  }
-  // Shooting: mouse click (or hold for automatics).
-  const weapon = WEAPONS[p.weapon];
-  if (!p.car && (input.mousePressed() || (weapon.auto && input.mouseHeld()))) playerShoot(G);
+let hotwireCar = null;
 
-  // Drive or walk.
-  if (p.car) {
-    const car = p.car;
-    stepCar(G, car, dt, input.throttle(), input.steer(), input.handbrake());
-    // The player's world position IS the car's while driving: missions, the
-    // garage, police distance and the minimap all read p.x/p.z.
-    p.x = car.x;
-    p.z = car.z;
-    p.heading = car.heading;
-    // Speeding through a red light near police adds a little heat.
-    if (Math.abs(car.speed) > 30 && G.policeNear && G.rng() < dt * 0.05) {
-      G.wanted = Math.min(5, G.wanted + 1);
-      policeHeat(G, 6);
-    }
-    if (car.hp <= 0) {
-      G.effects.burst(G, car.x, car.z);
-      G.audio.thud(G);
-      G.scene.remove(car.mesh);
-      G.cars.splice(G.cars.indexOf(car), 1);
-      p.car = null;
-      p.x = car.x + 3;
-      p.z = car.z + 3;
-      flash(G, 'Your car is wrecked. Find another ride.');
-    }
-  } else {
-    stepPlayer(G, dt);
+function handleEnter() {
+  const p = G.player;
+  if (p.inCar) {
+    // The Tune-Up Garage and shops work from the driver's seat.
+    if (useNearbyPlace()) return;
+    exitCar(G, p.inCar);
+    return;
   }
+  const car = nearestCar(G, p.mesh.position, 4.5);
+  if (car) {
+    if (car.locked) { hotwireCar = car; G.hud.banner('Locked — hold E to hotwire…', '#f2c94c'); return; }
+    trySteal(G, car, 0);
+    return;
+  }
+  if (useNearbyPlace()) return;
+  // Start / retry the story at Iris's cafe.
+  const L = G.landmarks;
+  if (Math.hypot(L.cafe.x - p.mesh.position.x, L.cafe.z - p.mesh.position.z) < 9) {
+    if (!G.missions.active) G.missions.start();
+    return;
+  }
+  G.hud.banner('Nothing to enter here — find a car, or visit the cafe, garage or hardware store.', '#f4f0e6');
+}
+
+function stepWorld(input, dt) {
+  G.time += dt;
+  stepPlayer(G, input, dt);
+  if (G.player.inCar) driveCar(G, G.player.inCar, input, dt);
+  else G.audio.engine(0);
   stepTraffic(G, dt);
   stepPedestrians(G, dt);
   stepPolice(G, dt);
   stepCombat(G, dt);
-  stepMissions(G, dt);
-  stepTaxi(G, dt);
-  effectsMod.stepEffects(G, dt);
-  audioMod.updateEngine(G);
-  updateCamera(G, dt);
-  animatePlayerMesh(G, dt);
-  G.time += dt;
+  stepPickups(G, dt);
+  G.missions.step(dt);
+  G.effects.update(dt);
+  stepCamera(G, input, dt);
+  G.hud.update();
 }
 
-function renderFrame() {
-  updateHud(G, 1 / 60);
-  renderer.render(scene, camera);
-}
-
-function runGame() {
-  refreshTitle();
-  let last = performance.now();
-  let accumulator = 0;
-  function frame(now) {
-    requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
-    last = now;
-    if (G.screen === 'play') {
-      while (accumulator >= STEP) {
-        step(STEP);
-        accumulator -= STEP;
-      }
-    } else {
-      accumulator = 0;
-      // Attract mode behind the title: traffic and pedestrians keep moving.
-      if (G.screen === 'title') {
-        stepTraffic(G, STEP);
-        stepPedestrians(G, STEP);
-        G.time += STEP;
-        updateCamera(G, STEP);
-      }
-    }
-    renderFrame();
+function handleActions(input) {
+  const actions = input.takeActions();
+  if (actions & ACTION_MUTE) {
+    G.audio.setMuted(!G.audio.muted);
+    G.hud.feed(G.audio.muted ? 'Sound muted.' : 'Sound on.');
   }
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && G.screen === 'play') showScreen('pause');
-  });
-  announce('Solmar City. Press New Game to start.');
-  requestAnimationFrame(frame);
+  if (G.screen === 'title') {
+    if (actions & ACTION_CONFIRM) startGame(false);
+    return;
+  }
+  if (G.screen === 'over') {
+    if (actions & ACTION_CONFIRM) showTitle();
+    return;
+  }
+  if (actions & ACTION_PAUSE) {
+    if (G.screen === 'play') {
+      G.screen = 'paused';
+      G.hud.showPause();
+      syncSave();
+      announce('Paused.');
+    } else if (G.screen === 'paused') {
+      G.screen = 'play';
+      G.hud.hideOverlays();
+      announce('Playing.');
+    }
+    return;
+  }
+  if (G.screen !== 'play') return;
+  if (actions & ACTION_ENTER) handleEnter();
+  if (actions & ACTION_PUNCH) playerPunch(G);
+  if (actions & ACTION_RELOAD) reloadWeapon(G);
+  if (actions & ACTION_CLICK) playerShoot(G);
+  // Shooting: hold to fire (SMG auto, others semi — one shot per press is enforced by fireTimer).
+  if (input.mouseDown) playerShoot(G);
+  // Hotwire progress while E is held near a locked car.
+  if (hotwireCar) {
+    if (input.held('enter')) {
+      if (trySteal(G, hotwireCar, 1 / 60)) hotwireCar = null;
+    } else {
+      hotwireCar.hotwire = 0;
+      G.hud.setHotwire(0);
+      hotwireCar = null;
+    }
+  }
 }
+
+function startGame(fresh) {
+  if (fresh) {
+    G.save = { cash: 500, ownedCars: ['meridian'], weapons: ['fists', 'pistol'], missionsDone: [], packages: [], bestRace: {}, bestWanted: 0, totalEarned: 0, playSeconds: 0 };
+    clearSave();
+    G.player.cash = 500;
+    G.player.health = 100;
+    G.missions.index = 0;
+    G.missions.active = false;
+  }
+  G.player.cash = G.save.cash;
+  G.screen = 'play';
+  G.hud.hideOverlays();
+  G.audio.resume();
+  // The story starts (or resumes) with the next mission — no trip to the cafe needed.
+  if (!G.missions.active && G.missions.index < 8) G.missions.start();
+  announce('Playing. Follow the yellow marker — or just explore Solmar.');
+}
+
+function showTitle() {
+  G.screen = 'title';
+  const hasSave = G.save.missionsDone.length > 0 || G.save.totalEarned > 0;
+  const stats = hasSave
+    ? `Missions done: ${G.save.missionsDone.length}/8 · Earned: $${G.save.totalEarned} · Packages: ${G.save.packages.length}/20 · Best wanted: ${G.save.bestWanted}★`
+    : 'A fresh start in Solmar. Iris is waiting at the cafe.';
+  G.hud.showTitle(hasSave, stats);
+  announce('Solmar City. Press Space or click to start.');
+}
+
+// Title-screen buttons.
+document.getElementById('continue-btn').addEventListener('click', () => startGame(false));
+document.getElementById('new-btn').addEventListener('click', () => startGame(true));
+document.getElementById('how-btn').addEventListener('click', () => {
+  const t = document.getElementById('how-text');
+  t.style.display = t.style.display === 'none' ? 'block' : 'none';
+});
+document.getElementById('resume-btn').addEventListener('click', () => { G.screen = 'play'; G.hud.hideOverlays(); });
+document.getElementById('restart-mission-btn').addEventListener('click', () => {
+  G.missions.retry();
+  G.screen = 'play';
+  G.hud.hideOverlays();
+});
+document.getElementById('quit-btn').addEventListener('click', () => { syncSave(); showTitle(); });
+document.getElementById('again-btn').addEventListener('click', () => {
+  G.player.health = 100;
+  G.player.mesh.position.copy(G.landmarks.hospital);
+  G.player.mesh.visible = true;
+  G.player.inCar = null;
+  G.police.clearStars();
+  G.screen = 'play';
+  G.hud.hideOverlays();
+});
+document.getElementById('menu-btn').addEventListener('click', () => { syncSave(); showTitle(); });
 
 function runShot(name) {
-  showScreen('play');
-  stageShot(name, G);
-  // Let the staged scene settle for two frames, then declare it ready.
+  const input = createInput(canvas);
+  stageShot(name, G, input);
   let painted = 0;
   function paint() {
-    renderFrame();
+    renderer.render(scene, camera);
     painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
+    if (painted < 3) requestAnimationFrame(paint);
     else window.__shotReady = true;
   }
   requestAnimationFrame(paint);
 }
+
+function runGame() {
+  const input = createInput(canvas);
+  let accumulator = 0;
+  let last = performance.now();
+  let titleAngle = 0;
+  showTitle();
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
+    last = now;
+    handleActions(input);
+    if (G.screen === 'title') {
+      // Ambient city behind the menu: slow orbit over Downtown, traffic + peds alive.
+      G.time += 1 / 60;
+      stepTraffic(G, 1 / 60);
+      stepPedestrians(G, 1 / 60);
+      G.effects.update(1 / 60);
+      titleAngle += 0.00045;
+      const cx = 30 + Math.sin(titleAngle) * 130;
+      const cz = -30 + Math.cos(titleAngle) * 130;
+      camera.position.set(cx, 55, cz);
+      camera.lookAt(30, 12, -30);
+      G.hud.update();
+    } else if (G.screen === 'play') {
+      while (accumulator >= STEP) {
+        stepWorld(input, STEP);
+        accumulator -= STEP;
+        if (G.screen !== 'play') break;
+      }
+    } else {
+      accumulator = 0;
+    }
+    if (G.screen !== 'title') renderer.render(scene, camera);
+    else renderer.render(scene, camera);
+  }
+  requestAnimationFrame(frame);
+}
+
+// Debug handle for play-testing: a stable view over the live game state.
+function carProxy(car) {
+  return {
+    get x() { return car.mesh.position.x; },
+    set x(v) { car.mesh.position.x = v; },
+    get z() { return car.mesh.position.z; },
+    set z(v) { car.mesh.position.z = v; },
+    get speed() { return car.speed; },
+    set speed(v) { car.speed = v; },
+    get model() { return car.model; },
+    get def() { return car.def; },
+  };
+}
+const ammoProxy = {
+  get pistol() { return G.player.ammoByWeapon.pistol; },
+  set pistol(v) { G.player.ammoByWeapon.pistol = v; if (G.player.weapon === 'pistol') G.player.ammo = v; },
+  get smg() { return G.player.ammoByWeapon.smg; },
+  set smg(v) { G.player.ammoByWeapon.smg = v; if (G.player.weapon === 'smg') G.player.ammo = v; },
+  get shotgun() { return G.player.ammoByWeapon.shotgun; },
+  set shotgun(v) { G.player.ammoByWeapon.shotgun = v; if (G.player.weapon === 'shotgun') G.player.ammo = v; },
+};
+window.__solmar = {
+  get time() { return G.time; },
+  get colliders() { return G.colliders; },
+  get traffic() { return G.traffic.cars; },
+  get peds() { return G.pedestrians.list; },
+  get cars() { return G.cars; },
+  get screen() { return G.screen; },
+  get cash() { return G.player.cash; },
+  get wanted() { return G.police.stars; },
+  set wanted(v) { G.police.stars = v; G.police.heat = v; G.hud.setStars(v); },
+  get police() { return G.police; },
+  missions: {
+    get active() { return G.missions.active ? { id: G.missions.index + 1 } : null; },
+    get done() { return G.save.missionsDone; },
+  },
+  player: {
+    get x() { return G.player.mesh.position.x; },
+    set x(v) { G.player.mesh.position.x = v; },
+    get z() { return G.player.mesh.position.z; },
+    set z(v) { G.player.mesh.position.z = v; },
+    get car() { return G.player.inCar ? carProxy(G.player.inCar) : null; },
+    set car(v) { if (v === null && G.player.inCar) exitCar(G, G.player.inCar); },
+    get weapon() { return G.player.weapon; },
+    set weapon(w) { G.player.weapon = w; if (w !== 'fists') G.player.ammo = G.player.ammoByWeapon[w]; },
+    get ammo() { return ammoProxy; },
+  },
+  save: { write() { syncSave(); } },
+};
 
 if (shot) runShot(shot);
 else runGame();

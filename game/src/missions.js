@@ -1,249 +1,322 @@
-// Solmar City — missions and story: 8 sequential story missions with typed
-// objectives (drive to, steal, pick up, deliver, defeat), plus side jobs:
-// taxi fares, 20 hidden packages, street races. Rewards feed the cash
-// economy; progress is saved.
-import { MISSIONS, PACKAGES, PACKAGE_BONUS, GARAGE_POS, HARDWARE_POS, MOTORS_POS } from './config.js';
+// Story: 8 missions for fixer Iris Delgado against the Harbor Kings, plus side jobs —
+// 20 hidden packages, taxi fares and 3 checkpoint street races. Objectives show in the
+// HUD banner and on the minimap; rewards pay cash into the save.
+import * as THREE from 'three';
+import { MISSION_DEFS } from './config.js';
 import { spawnCar } from './vehicles.js';
-import { spawnEnemy, clearEnemies } from './combat.js';
 import { spawnPickup } from './combat.js';
 
-export function createMissions(G) {
-  return {
-    index: 0,            // next story mission (0-based)
-    step: 0,             // step inside the current mission
-    active: null,        // { mission, step } while a mission runs
-    done: [],            // completed mission ids
-    packages: 0,
-    packageSpots: [],
-    timer: 0,            // countdown for timed steps
-    banner: '',
-    bannerTimer: 0,
-    taxi: null,          // active side fare
-    race: null,          // active street race
-    targetCar: null,     // car a steal step wants
-    kills: 0,
-    pendingNext: 0,      // seconds until the next story mission auto-starts
-    packagePositions: [],
-  };
+function markerMesh() {
+  const geo = new THREE.ConeGeometry(1.1, 2.4, 4);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xf2c94c, transparent: true, opacity: 0.9 });
+  const m = new THREE.Mesh(geo, mat);
+  m.rotation.x = Math.PI;
+  return m;
 }
 
-export function initMissionWorld(G) {
-  // Scatter the 20 hidden packages along the sidewalks, where a player can
-  // actually reach them (never inside a building).
-  const spots = [];
-  for (let i = 0; i < PACKAGES; i += 1) {
-    const road = G.roadLines[Math.floor(G.rng() * G.roadLines.length)];
-    const along = Math.round((G.rng() * 2 - 1) * 260 / 10) * 10;
-    const side = G.rng() < 0.5 ? 10 : -10;
-    const x = road.axis === 'x' ? along : road.at + side;
-    const z = road.axis === 'x' ? road.at + side : along;
-    spots.push([x, z]);
-  }
-  G.missions.packagePositions = spots;
-  for (const [x, z] of spots) spawnPickup(G, 'package', x, z);
-  // Mark the shops on the world: garage, hardware, motors.
-  G.markers = [
-    { kind: 'garage', x: GARAGE_POS[0], z: GARAGE_POS[1], label: 'Tune-Up Garage ($150)' },
-    { kind: 'shop', x: HARDWARE_POS[0], z: HARDWARE_POS[1], label: 'Harbor Hardware' },
-    { kind: 'motors', x: MOTORS_POS[0], z: MOTORS_POS[1], label: 'Marina Motors' },
-  ];
-}
-
-export function currentMission(G) {
-  return MISSIONS[G.missions.index] ?? null;
-}
-
-export function startMission(G, index) {
-  const mission = MISSIONS[index];
-  if (!mission) return;
-  G.missions.index = index;
-  G.missions.step = 0;
-  G.missions.active = mission;
-  G.missions.kills = 0;
-  G.missions.timer = 0;
-  showBanner(G, `${mission.title} \u2014 ${mission.intro}`, 6);
-  G.audio.sting(G, true);
-  enterStep(G);
-}
-
-function enterStep(G) {
-  const m = G.missions;
-  const mission = m.active;
-  if (!mission) return;
-  const step = mission.steps[m.step];
-  if (!step) return;
-  if (step.type === 'steal') {
-    // The target car waits at the step position (parked, engine off).
-    m.targetCar = spawnCar(G, step.model, step.pos[0], step.pos[1], 0, { locked: false });
-    G.hud.flash(G, `Steal the ${step.model === 'vela' ? 'Vela GT' : 'Hauler'} \u2014 press E next to it.`);
-  }
-  if (step.type === 'defeat') {
-    clearEnemies(G);
-    m.kills = 0;
-    for (let i = 0; i < step.count; i += 1) {
-      const a = (i / step.count) * Math.PI * 2;
-      spawnEnemy(G, step.pos[0] + Math.cos(a) * 12, step.pos[1] + Math.sin(a) * 12, 'king');
-    }
-    G.hud.flash(G, `Defeat ${step.count} Harbor Kings.`);
-  }
-  if (step.time) m.timer = step.time;
-  showBanner(G, step.label, 4);
-}
-
-function showBanner(G, text, seconds) {
-  G.missions.banner = text;
-  G.missions.bannerTimer = seconds;
-  G.hud.setObjective(G, text);
-}
-
-function completeStep(G) {
-  const m = G.missions;
-  const mission = m.active;
-  m.step += 1;
-  if (m.step >= mission.steps.length) {
-    completeMission(G, mission);
-  } else {
-    enterStep(G);
-  }
-}
-
-function completeMission(G, mission) {
-  const m = G.missions;
-  G.cash += mission.reward;
-  m.done.push(mission.id);
-  m.active = null;
-  m.index += 1;
-  clearEnemies(G);
-  showBanner(G, `Mission complete: ${mission.title} \u2014 +$${mission.reward}`, 5);
-  G.audio.sting(G, true);
-  G.save.write(G);
-  if (!MISSIONS[m.index]) {
-    showBanner(G, 'SOLMAR IS YOURS \u2014 all 8 missions done. Free roam unlocked!', 8);
-  } else {
-    // The next mission starts by itself a few seconds later, so the story
-    // keeps flowing without a menu trip.
-    m.pendingNext = 4;
-  }
-}
-
-export function failStep(G, reason) {
-  const m = G.missions;
-  if (!m.active) return;
-  showBanner(G, reason, 4);
-  // Restart the current step, not the whole mission.
-  clearEnemies(G);
-  if (m.targetCar) {
-    G.scene.remove(m.targetCar.mesh);
-    G.cars.splice(G.cars.indexOf(m.targetCar), 1);
-    m.targetCar = null;
-  }
-  enterStep(G);
-}
-
-export function onEnemyKilled(G, enemy) {
-  const m = G.missions;
-  if (!m.active) return;
-  const step = m.active.steps[m.step];
-  if (step && step.type === 'defeat') {
-    m.kills += 1;
-    showBanner(G, `${step.label} \u2014 ${m.kills}/${step.count} down`, 3);
-    if (m.kills >= step.count) completeStep(G);
-  }
-}
-
-export function onShotFired(G) {
-  // Mission 4's escort notices gunfire; nothing else needs it yet.
-}
-
-export function stepMissions(G, dt) {
-  const m = G.missions;
-  if (m.bannerTimer > 0) {
-    m.bannerTimer -= dt;
-    if (m.bannerTimer <= 0) G.hud.setObjective(G, m.active ? m.active.steps[m.step]?.label ?? '' : '');
-  }
-  // Between story missions: count down, then start the next one.
-  if (!m.active && m.pendingNext > 0) {
-    m.pendingNext -= dt;
-    if (m.pendingNext <= 0) {
-      m.pendingNext = 0;
-      startMission(G, m.index);
-    }
-    return;
-  }
-  const p = G.player;
-  // Timed steps count down; running out fails the step.
-  if (m.active && m.timer > 0) {
-    m.timer -= dt;
-    if (m.timer <= 0) {
-      failStep(G, 'Too slow \u2014 the step restarts.');
-      return;
-    }
-  }
-  if (!m.active) return;
-  const step = m.active.steps[m.step];
-  if (!step) return;
-  const dist = Math.hypot(p.x - step.pos[0], p.z - step.pos[1]);
-  const inCar = !!p.car;
-  switch (step.type) {
-    case 'driveTo':
-      if (dist < 10) completeStep(G);
-      break;
-    case 'steal':
-      if (m.targetCar && p.car === m.targetCar) completeStep(G);
-      break;
-    case 'pickup':
-      if (dist < 4) completeStep(G);
-      break;
-    case 'dropoff':
-    case 'deliver':
-      if (dist < 6 && (step.type === 'deliver' ? !inCar : true)) completeStep(G);
-      break;
+function buildSteps(G, def) {
+  const L = G.landmarks;
+  switch (def.id) {
+    case 1:
+      return [{ type: 'goto', pos: L.cafe, radius: 6, text: 'Drive to Iris\'s cafe in Old Town' }];
+    case 2:
+      return [
+        { type: 'steal', model: 'vela', pos: L.marina, radius: 8, text: 'Steal the Vela GT at the Marina' },
+        { type: 'deliver', pos: L.docks, radius: 8, text: 'Deliver the Vela GT to the Docks' },
+      ];
+    case 3:
+      return [{ type: 'taxi', timeLimit: 240, text: 'Taxi fares: 3 pickups across the city' }];
+    case 4:
+      return [
+        { type: 'goto', pos: new THREE.Vector3(0, 0, -60), radius: 5, text: 'Pick up the package in Downtown' },
+        { type: 'kill', count: 4, pos: new THREE.Vector3(30, 0, -60), text: 'Harbor Kings ambush! Fight them off' },
+        { type: 'goto', pos: L.cafe, radius: 6, text: 'Deliver the package to Iris' },
+      ];
+    case 5:
+      return [
+        { type: 'steal', model: 'hauler', pos: L.docks, radius: 8, text: 'Steal the Hauler at the Docks' },
+        { type: 'escape', pos: L.hillsLookout, radius: 10, wanted: 3, text: 'Lose the 3-star chase at the Hills lookout' },
+      ];
+    case 6:
+      return [
+        { type: 'goto', pos: L.pier, radius: 8, text: 'Get to Pier 9' },
+        { type: 'kill', count: 8, pos: L.pierEnd, text: 'Defeat 8 Harbor Kings gunmen' },
+        { type: 'goto', pos: L.marina, radius: 8, text: 'Escape to the Marina in a car' },
+      ];
+    case 7:
+      return [{ type: 'race', timeLimit: 150, text: 'Race the ring road — beat the clock, dodge the spikes' }];
+    case 8:
+      return [
+        { type: 'goto', pos: L.towerGarage, radius: 8, text: 'Infiltrate the Solmar Tower garage' },
+        { type: 'kill', count: 6, pos: L.towerGarage, text: 'Take down Vale\'s crew' },
+        { type: 'escape', pos: L.hillsLookout, radius: 10, wanted: 4, text: 'Getaway — reach the Hills lookout' },
+      ];
     default:
-      break;
+      return [];
   }
-  // Packages: collected by walking over the glowing box.
-  for (let i = G.combat.pickups.length - 1; i >= 0; i -= 1) {
-    const pk = G.combat.pickups[i];
-    if (pk.kind === 'package' && Math.hypot(pk.x - p.x, pk.z - p.z) < 2) {
-      G.scene.remove(pk.mesh);
-      G.combat.pickups.splice(i, 1);
-      m.packages += 1;
-      G.cash += 50;
-      G.audio.chime(G);
-      showBanner(G, `Package found! ${m.packages}/${PACKAGES} \u2014 +$50`, 3);
-      if (m.packages >= PACKAGES) {
-        G.cash += PACKAGE_BONUS;
-        showBanner(G, `All ${PACKAGES} packages! Bonus +$${PACKAGE_BONUS}`, 5);
+}
+
+export function createMissions(G) {
+  const marker = markerMesh();
+  marker.visible = false;
+  G.scene.add(marker);
+  const pkgMeshes = [];
+  for (const spot of G.landmarks.packageSpots) {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(0.7, 0.7, 0.7),
+      new THREE.MeshLambertMaterial({ color: 0x17a398, emissive: 0x17a398, emissiveIntensity: 0.5 }),
+    );
+    m.position.set(spot.x, 0.9, spot.z);
+    m.visible = !G.save.packages.includes(pkgMeshes.length);
+    G.scene.add(m);
+    pkgMeshes.push({ mesh: m, pos: spot, found: G.save.packages.includes(pkgMeshes.length) });
+  }
+  const M = {
+    index: 0, // 0-based; MISSION_DEFS.length means story complete
+    steps: [],
+    stepIndex: 0,
+    timer: 0,
+    targetCar: null,
+    taxiFares: [],
+    taxiStage: 0,
+    racePoints: [],
+    raceIndex: 0,
+    kills: 0,
+    killsNeeded: 0,
+    marker,
+    pkgMeshes,
+    active: false,
+    race: null,
+    objective: 'Free roam — press M1 to start the story',
+    targetPos: null,
+    start() {
+      if (this.index >= MISSION_DEFS.length) return;
+      const def = MISSION_DEFS[this.index];
+      this.steps = buildSteps(G, def);
+      this.stepIndex = 0;
+      this.active = true;
+      this.kills = 0;
+      this.beginStep();
+      G.hud.banner(`Mission ${def.id}: ${def.name}`, '#f2c94c');
+      G.hud.feed(def.brief);
+      G.audio.missionDone();
+    },
+    beginStep() {
+      const s = this.steps[this.stepIndex];
+      if (!s) { this.complete(); return; }
+      this.objective = s.text;
+      this.targetPos = s.pos || null;
+      this.timer = s.timeLimit || 0;
+      this.marker.visible = !!s.pos;
+      if (s.pos) this.marker.position.set(s.pos.x, 6, s.pos.z);
+      if (s.type === 'steal') {
+        if (this.targetCar) { /* keep the previous one */ }
+        const car = spawnCar(G, s.model, s.pos.x, s.pos.z, 0, { mission: 'stolen' });
+        this.targetCar = car;
+        this.targetPos = s.pos;
       }
-      G.save.write(G);
-    }
-  }
-}
-
-/** Taxi side job: start a fare from the nearest taxi. */
-export function startTaxiFare(G) {
-  const m = G.missions;
-  if (m.taxi) return;
-  const spots = [[120, -120], [-120, 120], [0, 240], [240, -240], [-240, 0], [0, -240]];
-  const dest = spots[Math.floor(G.rng() * spots.length)];
-  m.taxi = { dest, timer: 90 };
-  showBanner(G, `Taxi fare: drop the passenger at the marker. 90 s.`, 4);
-}
-
-export function stepTaxi(G, dt) {
-  const m = G.missions;
-  if (!m.taxi) return;
-  m.taxi.timer -= dt;
-  const p = G.player;
-  if (Math.hypot(p.x - m.taxi.dest[0], p.z - m.taxi.dest[1]) < 8 && p.car) {
-    const tip = Math.floor(G.rng() * 40);
-    G.cash += 60 + tip;
-    showBanner(G, `Fare complete! +$${60 + tip}`, 3);
-    G.audio.chime(G);
-    m.taxi = null;
-    G.save.write(G);
-  } else if (m.taxi.timer <= 0) {
-    showBanner(G, 'Fare missed \u2014 the passenger walked away.', 3);
-    m.taxi = null;
-  }
+      if (s.type === 'kill') {
+        this.kills = 0;
+        this.killsNeeded = s.count;
+        const spots = [];
+        for (let i = 0; i < s.count; i += 1) spots.push(new THREE.Vector3(s.pos.x + (i % 4) * 5 - 8, 0, s.pos.z + Math.floor(i / 4) * 6 - 4));
+        G.combat.spawnGunmen(spots, s.count);
+        this.targetPos = s.pos;
+      }
+      if (s.type === 'taxi') this.setupTaxi();
+      if (s.type === 'race') this.setupRace();
+      if (s.type === 'escape') {
+        // The job itself draws the heat: the chase is already on when the escape begins.
+        G.police.addHeat(Math.max(0, s.wanted - G.police.stars));
+      }
+      G.hud.setObjective(this.objective);
+    },
+    setupTaxi() {
+      const spots = [
+        { pick: new THREE.Vector3(-180, 0, 60), drop: new THREE.Vector3(180, 0, -120) },
+        { pick: new THREE.Vector3(120, 0, -180), drop: new THREE.Vector3(-120, 0, 180) },
+        { pick: new THREE.Vector3(0, 0, 180), drop: new THREE.Vector3(240, 0, 60) },
+      ];
+      this.taxiFares = spots;
+      this.taxiStage = 0; // 0 = drive to pickup, 1 = drive to drop
+      this.targetPos = spots[0].pick;
+      this.marker.position.set(spots[0].pick.x, 6, spots[0].pick.z);
+      this.marker.visible = true;
+      this.objective = 'Taxi: pick up the fare at the marker';
+      G.hud.setObjective(this.objective);
+    },
+    setupRace() {
+      const ring = [
+        new THREE.Vector3(0, 0, -270), new THREE.Vector3(270, 0, -270),
+        new THREE.Vector3(270, 0, 270), new THREE.Vector3(0, 0, 270),
+        new THREE.Vector3(-270, 0, 270), new THREE.Vector3(-270, 0, -270),
+        new THREE.Vector3(0, 0, -270),
+      ];
+      this.racePoints = ring;
+      this.raceIndex = 0;
+      this.targetPos = ring[0];
+      this.marker.position.set(ring[0].x, 6, ring[0].z);
+      this.marker.visible = true;
+      this.objective = 'Race: hit every ring-road checkpoint';
+      G.hud.setObjective(this.objective);
+    },
+    nextStep() {
+      this.stepIndex += 1;
+      if (this.stepIndex >= this.steps.length) this.complete();
+      else this.beginStep();
+    },
+    complete() {
+      const def = MISSION_DEFS[this.index];
+      const p = G.player;
+      p.cash += def.reward;
+      G.save.cash = p.cash;
+      G.save.totalEarned += def.reward;
+      if (!G.save.missionsDone.includes(def.id)) G.save.missionsDone.push(def.id);
+      G.hud.banner(`Mission complete: ${def.name} — $${def.reward}`, '#3ad86b');
+      G.hud.feed(`Iris: "Nice work, Juno. $${def.reward} is yours."`);
+      G.audio.missionDone();
+      G.combat.clearEnemies();
+      this.marker.visible = false;
+      this.targetPos = null;
+      this.active = false;
+      this.index += 1;
+      if (this.index >= MISSION_DEFS.length) {
+        this.objective = 'SOLMAR IS YOURS — story complete. Free roam!';
+        G.hud.showEnd('SOLMAR IS YOURS', `All 8 missions done. You earned $${G.save.totalEarned} working for Iris.`);
+        G.screen = 'over';
+      } else {
+        // The next mission starts at once — the story never makes you wait.
+        this.start();
+      }
+      G.hud.setObjective(this.objective);
+    },
+    fail(reason) {
+      G.hud.banner(`Mission failed: ${reason}`, '#ff6b4a');
+      G.audio.fail();
+      G.combat.clearEnemies();
+      this.active = false;
+      this.marker.visible = false;
+      this.targetPos = null;
+      this.objective = 'Mission failed — drive to the cafe to retry';
+      this.targetPos = G.landmarks.cafe;
+      this.marker.visible = true;
+      this.marker.position.set(G.landmarks.cafe.x, 6, G.landmarks.cafe.z);
+      G.hud.setObjective(this.objective);
+    },
+    retry() {
+      // Restart the current mission from its first step.
+      this.start();
+    },
+    onKill() {
+      if (!this.active) return;
+      const s = this.steps[this.stepIndex];
+      if (s && s.type === 'kill') {
+        this.kills += 1;
+        this.objective = `${s.text} (${this.kills}/${this.killsNeeded} down)`;
+        G.hud.setObjective(this.objective);
+        if (this.kills >= this.killsNeeded) this.nextStep();
+      }
+    },
+    step(dt) {
+      // Marker bob + spin.
+      if (this.marker.visible) {
+        this.marker.rotation.y += dt * 2;
+        this.marker.position.y = 6 + Math.sin(G.time * 2.5) * 0.5;
+      }
+      // Packages: collectible side job, $50 each.
+      const p = G.player;
+      for (let i = 0; i < this.pkgMeshes.length; i += 1) {
+        const pkg = this.pkgMeshes[i];
+        if (pkg.found) continue;
+        pkg.mesh.rotation.y += dt;
+        const d = Math.hypot(pkg.pos.x - p.mesh.position.x, pkg.pos.z - p.mesh.position.z);
+        if (d < 2 && !p.inCar) {
+          pkg.found = true;
+          pkg.mesh.visible = false;
+          G.save.packages.push(i);
+          p.cash += 50;
+          G.save.cash = p.cash;
+          G.audio.pickup();
+          G.hud.feed(`Package found! $50 (${G.save.packages.length}/20).`);
+          if (G.save.packages.length === 20) {
+            p.cash += 500;
+            G.save.cash = p.cash;
+            G.hud.banner('All 20 packages! Bonus $500.', '#3ad86b');
+          }
+        }
+      }
+      if (!this.active) return;
+      const s = this.steps[this.stepIndex];
+      if (!s) return;
+      if (s.timeLimit) {
+        this.timer -= dt;
+        if (this.timer <= 0) { this.fail('Out of time.'); return; }
+        G.hud.setTimer(Math.max(0, Math.ceil(this.timer)));
+      }
+      const pos = p.inCar ? p.inCar.mesh.position : p.mesh.position;
+      const distTo = (target) => Math.hypot(target.x - pos.x, target.z - pos.z);
+      if (s.type === 'goto' || s.type === 'deliver') {
+        if (distTo(s.pos) < s.radius) this.nextStep();
+      } else if (s.type === 'steal') {
+        if (p.inCar === this.targetCar) {
+          G.police.addHeat(1);
+          this.nextStep();
+        }
+      } else if (s.type === 'escape') {
+        if (G.police.stars >= s.wanted) {
+          // Once the heat is on, reaching the spot clears the chase.
+          if (distTo(s.pos) < s.radius) {
+            G.police.clearStars();
+            this.nextStep();
+          }
+        } else if (distTo(s.pos) < s.radius) {
+          // Arrived before the heat: wait for the cops, or just move on.
+          this.objective = `${s.text} — get the cops on you first!`;
+          G.hud.setObjective(this.objective);
+        }
+      } else if (s.type === 'taxi') {
+        const fare = this.taxiFares[Math.floor(this.taxiStage / 2)];
+        if (!fare) { this.nextStep(); return; }
+        if (this.taxiStage % 2 === 0) {
+          if (distTo(fare.pick) < 6 && p.inCar) {
+            this.taxiStage += 1;
+            this.targetPos = fare.drop;
+            this.marker.position.set(fare.drop.x, 6, fare.drop.z);
+            this.objective = 'Taxi: take the fare to the drop-off';
+            G.hud.setObjective(this.objective);
+            G.hud.feed('Fare: "Step on it!"');
+          }
+        } else if (distTo(fare.drop) < 6 && p.inCar) {
+          p.cash += 120;
+          G.save.cash = p.cash;
+          G.audio.pickup();
+          G.hud.feed('Fare paid $120.');
+          this.taxiStage += 1;
+          if (this.taxiStage / 2 >= this.taxiFares.length) this.nextStep();
+          else {
+            const next = this.taxiFares[this.taxiStage / 2];
+            this.targetPos = next.pick;
+            this.marker.position.set(next.pick.x, 6, next.pick.z);
+            this.objective = 'Taxi: pick up the next fare';
+            G.hud.setObjective(this.objective);
+          }
+        }
+      } else if (s.type === 'race') {
+        const point = this.racePoints[this.raceIndex];
+        if (point && distTo(point) < 10) {
+          this.raceIndex += 1;
+          if (this.raceIndex >= this.racePoints.length) this.nextStep();
+          else {
+            const next = this.racePoints[this.raceIndex];
+            this.targetPos = next;
+            this.marker.position.set(next.x, 6, next.z);
+            this.objective = `Race: checkpoint ${this.raceIndex + 1}/${this.racePoints.length}`;
+            G.hud.setObjective(this.objective);
+          }
+        }
+      }
+      // Kill steps advance through onKill(); the marker stays on the fight.
+    },
+  };
+  return M;
 }

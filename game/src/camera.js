@@ -1,80 +1,75 @@
-// Solmar City — camera: chase-cam for driving with lag and a speed FOV kick,
-// over-shoulder for walking, and smooth transitions when entering/exiting a
-// car, plus screen shake.
+// Cameras: on-foot over-shoulder orbit, driving chase-cam with lag and speed FOV kick,
+// smooth transitions on enter/exit, trauma-based shake.
+import * as THREE from 'three';
+import { angleLerp, clamp, lerp } from './random.js';
 
 export function createCamera(G) {
-  G.cameraYaw = Math.PI; // looking north (down -z) at start
-  G.cameraPitch = 0.32;
-  G.cameraDist = 9;
-  G.shake = 0;
-  G.camPos = { x: 0, y: 8, z: 140 };
-  G.camLook = { x: 0, y: 2, z: 120 };
+  return {
+    yaw: 0,
+    pitch: 0.32,
+    dist: 7.5,
+    target: new THREE.Vector3(),
+    current: new THREE.Vector3(0, 6, -10),
+    fov: 62,
+    shake: 0,
+  };
 }
 
-export function updateCamera(G, dt) {
-  if (G.freezeCam) {
-    // Staged screenshot vista: hold the camera exactly where the shot put it.
-    G.camera.position.set(G.camPos.x, G.camPos.y, G.camPos.z);
-    G.camera.lookAt(G.camLook.x, G.camLook.y, G.camLook.z);
-    return;
-  }
+export function stepCamera(G, input, dt) {
+  const cam = G.camera;
+  const delta = input.takeMouseDelta();
+  cam.yaw -= delta.x * 0.0032;
+  cam.pitch = clamp(cam.pitch + delta.y * 0.0022, 0.08, 1.1);
   const p = G.player;
-  const look = G.input.takeLook();
-  G.cameraYaw -= look.dx * 0.0032;
-  G.cameraPitch = Math.max(-0.15, Math.min(0.9, G.cameraPitch + look.dy * 0.0022));
-
-  let tx;
-  let ty;
-  let tz;
-  let lx;
-  let ly;
-  let lz;
-  let dist = G.cameraDist;
-  if (p.car) {
-    const car = p.car;
-    const speedFrac = Math.min(1, Math.abs(car.speed) / car.def.topSpeed);
-    dist = 9 + speedFrac * 4;
-    // Chase cam: behind the car, easing toward the car's heading.
+  let desired;
+  let lookAt;
+  if (p.inCar) {
+    const car = p.inCar;
     const back = car.heading + Math.PI;
-    const wantYaw = Math.atan2(-Math.sin(back), -Math.cos(back));
-    // Blend camera yaw toward the car's rear; mouse-look nudges it.
-    let dy = wantYaw - G.cameraYaw;
-    while (dy > Math.PI) dy -= Math.PI * 2;
-    while (dy < -Math.PI) dy += Math.PI * 2;
-    G.cameraYaw += dy * Math.min(1, dt * 2.2);
-    const pitch = 0.28 + speedFrac * 0.06;
-    tx = car.x - Math.sin(G.cameraYaw) * dist * Math.cos(pitch);
-    ty = 3.5 + Math.sin(pitch) * dist;
-    tz = car.z - Math.cos(G.cameraYaw) * dist * Math.cos(pitch);
-    lx = car.x + Math.sin(car.heading) * 6;
-    ly = 1.6;
-    lz = car.z + Math.cos(car.heading) * 6;
-    G.camera.fov = 62 + speedFrac * 10;
-    G.camera.updateProjectionMatrix();
+    const speed01 = Math.abs(car.speed) / car.def.topSpeed;
+    const dist = 9 + speed01 * 4;
+    desired = new THREE.Vector3(
+      car.mesh.position.x + Math.sin(back) * dist,
+      4.2 + speed01 * 0.8,
+      car.mesh.position.z + Math.cos(back) * dist,
+    );
+    lookAt = new THREE.Vector3(
+      car.mesh.position.x + Math.sin(car.heading) * 6,
+      1.6,
+      car.mesh.position.z + Math.cos(car.heading) * 6,
+    );
+    cam.yaw = angleLerp(cam.yaw, car.heading + Math.PI, Math.min(1, dt * 2.2));
+    const targetFov = 62 + speed01 * 16;
+    cam.fov = lerp(cam.fov, targetFov, Math.min(1, dt * 3));
   } else {
-    dist = 8;
-    tx = p.x - Math.sin(G.cameraYaw) * dist * Math.cos(G.cameraPitch);
-    ty = 2.2 + Math.sin(G.cameraPitch) * dist;
-    tz = p.z - Math.cos(G.cameraYaw) * dist * Math.cos(G.cameraPitch);
-    lx = p.x;
-    ly = 1.7 + p.y;
-    lz = p.z;
-    G.camera.fov = 62;
-    G.camera.updateProjectionMatrix();
+    const dist = 7.5;
+    desired = new THREE.Vector3(
+      p.mesh.position.x - Math.sin(cam.yaw) * Math.cos(cam.pitch) * dist,
+      p.mesh.position.y + 2.2 + Math.sin(cam.pitch) * dist,
+      p.mesh.position.z - Math.cos(cam.yaw) * Math.cos(cam.pitch) * dist,
+    );
+    lookAt = new THREE.Vector3(p.mesh.position.x, p.mesh.position.y + 1.6, p.mesh.position.z);
+    cam.fov = lerp(cam.fov, 62, Math.min(1, dt * 3));
   }
-  // Ease the camera toward its target so enter/exit feels smooth.
-  const k = Math.min(1, dt * 7);
-  G.camPos.x += (tx - G.camPos.x) * k;
-  G.camPos.y += (ty - G.camPos.y) * k;
-  G.camPos.z += (tz - G.camPos.z) * k;
-  G.camLook.x += (lx - G.camLook.x) * k;
-  G.camLook.y += (ly - G.camLook.y) * k;
-  G.camLook.z += (lz - G.camLook.z) * k;
-  // Screen shake decays and jitters the camera a little.
-  G.shake = Math.max(0, G.shake - dt * 1.8);
-  const sh = G.shake * G.shake * 0.9;
-  const jx = (Math.random() - 0.5) * sh;
-  const jy = (Math.random() - 0.5) * sh;
-  G.camera.position.set(G.camPos.x + jx, G.camPos.y + jy, G.camPos.z);
-  G.camera.lookAt(G.camLook.x + jx, G.camLook.y + jy, G.camLook.z);
+  // Keep the camera out of buildings and above the ground.
+  desired.y = Math.max(desired.y, 1.2);
+  const lag = p.inCar ? 1 - Math.exp(-dt * 4.5) : 1 - Math.exp(-dt * 9);
+  cam.current.lerp(desired, lag);
+  cam.target.lerp(lookAt, 1 - Math.exp(-dt * 10));
+  // Shake decays; applied as a small random offset.
+  cam.shake = Math.max(0, cam.shake - dt * 1.8);
+  G.cameraShake = cam.shake;
+  const s = cam.shake * cam.shake;
+  const ox = (Math.random() - 0.5) * s * 0.9;
+  const oy = (Math.random() - 0.5) * s * 0.7;
+  G.three.camera.position.set(cam.current.x + ox, cam.current.y + oy, cam.current.z);
+  G.three.camera.lookAt(cam.target.x + ox, cam.target.y + oy, cam.target.z);
+  if (Math.abs(G.three.camera.fov - cam.fov) > 0.05) {
+    G.three.camera.fov = cam.fov;
+    G.three.camera.updateProjectionMatrix();
+  }
+}
+
+export function addShake(G, amount) {
+  G.camera.shake = Math.min(1, G.camera.shake + amount);
 }

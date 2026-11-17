@@ -1,128 +1,75 @@
-// Solmar City — every tuning number in one place. The city is a 600 x 600 m
-// square centred on the origin; roads run on a grid, buildings fill the blocks.
-
+// Solmar City — every tuning number, palette entry and definition in one place.
+// The city is a 600x600 m island of streets; the sea and beach run along the south edge.
 export const STEP = 1 / 60;
-export const CITY_HALF = 300;
-export const ROAD_HALF = 7;
+export const CITY = { half: 300, roadHalf: 6, beachZ: 252, seaZ: 300 };
 export const SAVE_KEY = 'solmar.save.v1';
 
-// Grid roads run at these coordinates on both axes (avenues + streets).
-export const ROADS = [-240, -120, 0, 120, 240];
+// Avenues run north-south, streets east-west; blocks sit between them.
+export const AVENUES = [-240, -120, 0, 120, 240];
+export const STREETS = [-240, -120, 0, 120, 240];
 
-export const PLAYER = {
-  radius: 0.55,
-  walkSpeed: 6,
-  sprintSpeed: 10,
-  jumpSpeed: 7.5,
-  gravity: 22,
-  health: 100,
-  regenDelay: 6,
-  regenRate: 4,
-};
-
-export const CARS = {
-  alba:    { name: 'Alba',        topSpeed: 26, accel: 14, brake: 30, steer: 1.9, grip: 0.92, hp: 60,  color: 0xf2d8a7, price: 0 },
-  meridian:{ name: 'Meridian',    topSpeed: 34, accel: 17, brake: 34, steer: 1.7, grip: 0.94, hp: 80,  color: 0x7fb5d9, price: 1200 },
-  vela:    { name: 'Vela GT',     topSpeed: 46, accel: 24, brake: 38, steer: 1.5, grip: 0.96, hp: 70,  color: 0xff6b4a, price: 5200 },
-  hauler:  { name: 'Hauler',      topSpeed: 24, accel: 11, brake: 26, steer: 1.4, grip: 0.9,  hp: 140, color: 0xd8e8c8, price: 2600 },
-  dune:    { name: 'Dune Runner', topSpeed: 30, accel: 15, brake: 30, steer: 1.8, grip: 0.9,  hp: 100, color: 0xe8a87c, price: 3400 },
-  taxi:    { name: 'Solmar Taxi', topSpeed: 32, accel: 16, brake: 34, steer: 1.7, grip: 0.94, hp: 80,  color: 0xf2c94c, price: 900 },
-  police:  { name: 'Interceptor', topSpeed: 44, accel: 26, brake: 40, steer: 1.9, grip: 0.97, hp: 120, color: 0x1b2a4a, price: 0 },
-};
-
-export const WEAPONS = {
-  fists:  { name: 'Fists',       mag: Infinity, reserve: Infinity, damage: 12, rate: 0.45, spread: 0,    range: 2.2,  auto: false, price: 0 },
-  pistol: { name: 'P-9 Sparrow', mag: 12, reserve: 96,  damage: 22, rate: 0.28, spread: 0.02, range: 60,   auto: false, price: 350 },
-  smg:    { name: 'Hornet-9',    mag: 28, reserve: 168, damage: 14, rate: 0.09, spread: 0.06, range: 45,   auto: true,  price: 1400 },
-  shotgun:{ name: 'Boomstick',   mag: 6,  reserve: 36,  damage: 16, rate: 0.8,  spread: 0.12, range: 22,   auto: false, price: 2100, pellets: 6 },
-};
-
-export const WANTED = {
-  decaySeconds: 20,      // out of sight this long drops one star
-  maxStars: 5,
-  policePerStar: [0, 1, 2, 3, 4, 5],
-  bustedRadius: 3.5,
-  garageFee: 150,
+export const PALETTE = {
+  skyTop: '#7fb5d9', skyBottom: '#ffd9a0', fog: '#f2c98f',
+  sea: '#2e86ab', sand: '#e8c890', asphalt: '#3a3f47', sidewalk: '#b8b0a0',
+  grass: '#7fae62', building: ['#f2d8a7', '#e8a87c', '#a8c8d8', '#d8e8c8', '#e8c8c8'],
+  accentCoral: '#ff6b4a', accentTeal: '#17a398', sun: '#ffe0a8',
+  policeRed: '#ff2e2e', policeBlue: '#2e6bff', taxiYellow: '#f2c94c',
 };
 
 export const DISTRICTS = [
-  { name: 'Marina Bay',   cx: -180, cz: 180,  color: 0x2e86ab, style: 'marina' },
-  { name: 'Old Town',     cx: -180, cz: -180, color: 0xf2d8a7, style: 'old' },
-  { name: 'Harbor Docks', cx: 180,  cz: 180,  color: 0x8b93a3, style: 'docks' },
-  { name: 'Downtown',     cx: 180,  cz: -180, color: 0xa8c8d8, style: 'downtown' },
-  { name: 'North Hills',  cx: 0,    cz: -260, color: 0xd8e8c8, style: 'hills' },
+  { name: 'Marina Bay', x0: -300, z0: 60, x1: -120, z1: 252, style: 'marina' },
+  { name: 'Old Town', x0: -300, z0: -120, x1: -60, z1: 60, style: 'oldtown' },
+  { name: 'Harbor Docks', x0: 120, z0: 60, x1: 300, z1: 252, style: 'docks' },
+  { name: 'Downtown', x0: -60, z0: -120, x1: 120, z1: 60, style: 'downtown' },
+  { name: 'North Hills', x0: -300, z0: -300, x1: 300, z1: -180, style: 'hills' },
 ];
 
-export const PALETTE = {
-  skyTop: '#7fb5d9',
-  skyHorizon: '#ffd9a0',
-  fog: '#f2c98f',
-  sea: '#2e86ab',
-  sand: '#e8c890',
-  asphalt: '#3a3f47',
-  sidewalk: '#9a938a',
-  grass: '#7fae6e',
-  coral: '#ff6b4a',
-  teal: '#17a398',
-  sun: '#ffd9a0',
-  text: '#f4efe6',
-  muted: '#c9bfae',
-  panel: 'rgba(20, 24, 34, 0.72)',
+export function districtAt(x, z) {
+  for (const d of DISTRICTS) {
+    if (x >= d.x0 && x < d.x1 && z >= d.z0 && z < d.z1) return d;
+  }
+  return { name: 'Solmar', style: 'downtown' };
+}
+
+// Invented car models — nothing from any real brand or game.
+export const CAR_MODELS = {
+  alba: { name: 'Alba', topSpeed: 26, accel: 14, grip: 2.6, length: 3.4, width: 1.7, height: 1.1, durability: 60, colors: ['#e8a87c', '#a8c8d8', '#f2d8a7'] },
+  meridian: { name: 'Meridian', topSpeed: 32, accel: 16, grip: 2.4, length: 4.2, width: 1.8, height: 1.2, durability: 80, colors: ['#3a5a7c', '#c8c8c8', '#7c3a3a'] },
+  vela: { name: 'Vela GT', topSpeed: 42, accel: 22, grip: 2.0, length: 4.0, width: 1.9, height: 1.0, durability: 55, colors: ['#ff6b4a', '#17a398', '#f2c94c'] },
+  hauler: { name: 'Hauler', topSpeed: 24, accel: 11, grip: 2.8, length: 5.2, width: 2.1, height: 1.9, durability: 140, colors: ['#8b93a3', '#5a6b7c'] },
+  dune: { name: 'Dune Runner', topSpeed: 30, accel: 15, grip: 2.5, length: 4.4, width: 1.9, height: 1.4, durability: 100, colors: ['#c86b3a', '#4a7c3a'] },
+  taxi: { name: 'Solmar Taxi', topSpeed: 30, accel: 15, grip: 2.4, length: 4.2, width: 1.8, height: 1.2, durability: 80, colors: ['#f2c94c'] },
+  interceptor: { name: 'Interceptor', topSpeed: 40, accel: 24, grip: 2.2, length: 4.3, width: 1.9, height: 1.2, durability: 120, colors: ['#20242a'] },
 };
 
-// The 8 story missions. pos = [x, z] of the objective marker; reward in $.
-export const MISSIONS = [
-  { id: 1, title: 'First Fare', short: 'Drive to Iris\u2019s caf\u00e9 in Old Town',
-    steps: [{ type: 'driveTo', pos: [-180, -111], label: 'Reach Iris\u2019s caf\u00e9' }],
-    reward: 200, intro: 'Iris Delgado is waiting at her caf\u00e9. Drive over and hear her out.' },
-  { id: 2, title: 'Borrowed Wheels', short: 'Steal a Vela GT from the Marina',
-    steps: [
-      { type: 'steal', model: 'vela', pos: [-200, 130], label: 'Steal the Vela GT at the Marina' },
-      { type: 'driveTo', pos: [200, 130], label: 'Deliver it to the Docks' },
-    ],
-    reward: 400, intro: 'Iris wants a Vela GT. Borrow one from the Marina \u2014 permanently.' },
-  { id: 3, title: 'Taxi Trouble', short: 'Three fares against the clock',
-    steps: [
-      { type: 'pickup', pos: [129, -111], label: 'Pick up the fare in Downtown' },
-      { type: 'dropoff', pos: [-111, 129], label: 'Drop them off at the Marina' },
-      { type: 'pickup', pos: [9, 249], label: 'Pick up the second fare' },
-      { type: 'dropoff', pos: [249, -231], label: 'Drop them off in North Hills' },
-    ],
-    reward: 350, intro: 'Cover for a sick driver. Three fares, one meter, no excuses.' },
-  { id: 4, title: 'The Drop', short: 'Carry the package through Downtown on foot',
-    steps: [
-      { type: 'pickup', pos: [129, -111], label: 'Collect the package' },
-      { type: 'deliver', pos: [249, -111], label: 'Deliver it on foot \u2014 Kings are watching' },
-    ],
-    reward: 500, intro: 'A package, a walk through Downtown, and Kings gunmen who want it.' },
-  { id: 5, title: 'Harbor Heist', short: 'Steal the Hauler and escape to the Hills',
-    steps: [
-      { type: 'steal', model: 'hauler', pos: [200, 130], label: 'Steal the Hauler at the Docks' },
-      { type: 'driveTo', pos: [0, -260], label: 'Escape to the Hills lookout' },
-    ],
-    reward: 800, intro: 'A Hauler full of cargo is sitting at the Docks. Take it. Lose the heat.' },
-  { id: 6, title: 'Kings\u2019 Gambit', short: 'Shootout at Pier 9',
-    steps: [{ type: 'defeat', pos: [-240, 260], label: 'Defeat 8 Harbor Kings at Pier 9', count: 8 }],
-    reward: 900, intro: 'The Kings are moving on Iris\u2019s crew at Pier 9. Hold the pier.' },
-  { id: 7, title: 'The Long Way Home', short: 'Timed race around the ring road',
-    steps: [
-      { type: 'driveTo', pos: [249, 249], label: 'Reach the ring-road gate', time: 75 },
-      { type: 'driveTo', pos: [-249, -249], label: 'Race to the far gate', time: 90 },
-    ],
-    reward: 1000, intro: 'A race the Kings set up \u2014 and a chase they didn\u2019t tell you about.' },
-  { id: 8, title: 'Vale\u2019s Fall', short: 'Confront Cassian Vale at Solmar Tower',
-    steps: [
-      { type: 'driveTo', pos: [200, -111], label: 'Reach the Solmar Tower garage' },
-      { type: 'defeat', pos: [200, -111], label: 'Defeat Vale\u2019s crew (10 gunmen)', count: 10 },
-      { type: 'driveTo', pos: [-200, 130], label: 'Getaway to the Marina' },
-    ],
-    reward: 2000, intro: 'End it. Vale\u2019s crew is holed up in the Solmar Tower garage.' },
+export const WEAPONS = {
+  fists: { name: 'Fists', damage: 12, range: 2.2, mag: Infinity, reserve: Infinity, rate: 0.45, spread: 0, auto: false },
+  pistol: { name: 'P-9 Sparrow', damage: 26, range: 60, mag: 12, reserve: 120, rate: 0.22, spread: 0.012, auto: false },
+  smg: { name: 'Hornet-9', damage: 16, range: 45, mag: 28, reserve: 196, rate: 0.09, spread: 0.03, auto: true },
+  shotgun: { name: 'Boomstick', damage: 14, range: 22, mag: 6, reserve: 48, rate: 0.8, spread: 0.07, pellets: 6, auto: false },
+};
+
+export const WANTED = {
+  decaySeconds: 20, // hidden out of sight this long clears one star
+  gainSteal: 1, gainHitPed: 1, gainShoot: 1, gainKill: 2,
+  maxPolice: [0, 1, 2, 3, 4, 5],
+};
+
+export const MISSION_DEFS = [
+  { id: 1, name: 'First Fare', brief: 'Drive your Meridian to Iris\'s cafe in Old Town.', reward: 200 },
+  { id: 2, name: 'Borrowed Wheels', brief: 'Steal a Vela GT from the Marina and deliver it to the Docks.', reward: 400 },
+  { id: 3, name: 'Taxi Trouble', brief: 'Three taxi fares across the city, against the clock.', reward: 350 },
+  { id: 4, name: 'The Drop', brief: 'Carry the package through Downtown on foot. The Harbor Kings are waiting.', reward: 500 },
+  { id: 5, name: 'Harbor Heist', brief: 'Steal the Hauler full of cargo from the Docks. Lose the 3-star chase at the Hills lookout.', reward: 800 },
+  { id: 6, name: "Kings' Gambit", brief: 'Shootout at Pier 9. Defeat 8 Harbor Kings gunmen, then escape by car.', reward: 900 },
+  { id: 7, name: 'The Long Way Home', brief: 'Timed race around the ring road — spike strips and a helicopter included.', reward: 1000 },
+  { id: 8, name: "Vale's Fall", brief: 'Storm the Solmar Tower garage, face Cassian Vale\'s crew, and get out clean.', reward: 2000 },
 ];
 
-export const PACKAGES = 20;      // hidden packages across the city, $50 each
-export const PACKAGE_BONUS = 500; // for finding all 20
-export const GARAGE_POS = [69, 249];   // Tune-Up Garage (clears wanted, repairs)
-export const HARDWARE_POS = [231, 200]; // Harbor Hardware (weapons)
-export const MOTORS_POS = [-200, 231];  // Marina Motors (buy cars)
-export const HOSPITAL_POS = [-111, -60]; // respawn point
+export const SHOP = {
+  garagePrice: 150, // Tune-Up Garage: clear wanted + repair + respray
+  pistolPrice: 300, smgPrice: 900, shotgunPrice: 700,
+  carsForSale: { vela: 2500, dune: 1800, hauler: 2200 },
+};
+
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';

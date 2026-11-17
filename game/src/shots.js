@@ -1,149 +1,121 @@
-// Solmar City — screenshot scenes behind ?shot=start|chase|drive|mission.
-// Each one plays the real rules forward from a fresh world with a fixed seed,
-// steered by scripted inputs (drive forward, hold the line), then freezes and
-// sets window.__shotReady. Same seed, same frame.
+// Screenshot scenes: each plays the real rules forward from a fresh world with a fixed
+// seed, steered by a simple autopilot, then freezes and lets main.js paint it.
+// ?shot=start|chase|drive|mission (with &seed=N).
+import * as THREE from 'three';
 import { STEP } from './config.js';
-import { spawnCar, stepCar, enterCar } from './vehicles.js';
+import { spawnCar, driveCar } from './vehicles.js';
 import { stepTraffic } from './traffic.js';
 import { stepPedestrians } from './pedestrians.js';
 import { stepPolice } from './police.js';
-import { stepCombat, spawnEnemy, playerShoot } from './combat.js';
-import { startMission } from './missions.js';
-import { updateCamera } from './camera.js';
-import { animatePlayerMesh } from './player.js';
-import { stepEffects } from './effects.js';
-import { updateHud } from './hud.js';
+import { stepCombat } from './combat.js';
+import { stepCamera } from './camera.js';
 
-/** Advance the living world without player input. */
-function advance(G, seconds, drive) {
-  const steps = Math.round(seconds / STEP);
+function fakeInput(steer) {
+  return {
+    held(name) {
+      if (name === 'forward') return true;
+      if (name === 'left') return steer < 0;
+      if (name === 'right') return steer > 0;
+      return false;
+    },
+    takeMouseDelta() { return { x: 0, y: 0 }; },
+    takeActions() { return 0; },
+    mouseDown: false,
+  };
+}
+
+function stepAmbient(G, dt) {
+  stepTraffic(G, dt);
+  stepPedestrians(G, dt);
+  stepPolice(G, dt);
+  G.effects.update(dt);
+}
+
+// Drive straight down an avenue, steering gently to stay on the road.
+function autopilotDrive(G, car, seconds) {
+  const steps = Math.floor(seconds / STEP);
   for (let i = 0; i < steps; i += 1) {
-    if (drive) {
-      const car = G.player.car;
-      if (car) {
-        stepCar(G, car, STEP, drive.throttle, drive.steer ?? 0, false);
-        G.player.x = car.x;
-        G.player.z = car.z;
-        G.player.heading = car.heading;
-      }
-    }
-    stepTraffic(G, STEP);
-    stepPedestrians(G, STEP);
-    stepPolice(G, STEP);
-    stepCombat(G, STEP);
-    stepEffects(G, STEP);
-    updateCamera(G, STEP);
-    animatePlayerMesh(G, STEP);
     G.time += STEP;
+    const laneX = Math.round(car.mesh.position.x / 120) * 120;
+    const err = laneX - car.mesh.position.x;
+    const steer = err > 2 ? -1 : err < -2 ? 1 : 0;
+    driveCar(G, car, fakeInput(steer), STEP);
+    stepAmbient(G, STEP);
+    if (G.player.inCar === car) G.player.mesh.position.copy(car.mesh.position);
   }
 }
 
-function showTitleDom() {
-  document.getElementById('screen-title').classList.add('on');
-  document.getElementById('screen-pause').classList.remove('on');
-  document.getElementById('screen-over').classList.remove('on');
-  document.getElementById('hud').classList.remove('on');
-  const stats = document.getElementById('title-stats');
-  if (stats) stats.textContent = '8 story missions \u00b7 5 districts \u00b7 steal any car \u00b7 outrun the law';
+// Let the chase-cam converge on the car after the autopilot has driven it.
+function settleCamera(G) {
+  for (let i = 0; i < 90; i += 1) stepCamera(G, fakeInput(0), STEP);
 }
 
-function stageStart(G) {
-  G.time = 2 * 3600; // 17:00, golden hour
-  G.player.x = 120;
-  G.player.z = -60;
-  G.player.heading = Math.PI;
-  G.cameraYaw = Math.PI * 0.9;
-  // Vista camera: high over the avenue, looking across Downtown at the tower.
-  G.freezeCam = true;
-  G.camPos = { x: 40, y: 65, z: 80 };
-  G.camLook = { x: 170, y: 25, z: -170 };
-  advance(G, 3, null);
-  showTitleDom();
-}
-
-function stageChase(G) {
-  G.time = 2 * 3600;
-  G.cash = 2450;
-  G.wanted = 3;
-  // Player in the Vela GT, barrelling north up the x=0 avenue.
-  const car = spawnCar(G, 'vela', 0, -160, 0, {});
-  enterCar(G, car);
-  car.speed = 30;
-  // Two Interceptors in pursuit — one alongside ahead-left, one sweeping in
-  // from ahead-right so both read in the chase camera's frame.
-  const cop1 = spawnCar(G, 'police', -8, 12, 0.2, { driver: 'police' });
-  cop1.speed = 33;
-  const cop2 = spawnCar(G, 'police', 9, 42, Math.PI * 0.85, { driver: 'police' });
-  cop2.speed = 31;
-  G.police.cars.push(cop1, cop2);
-  G.cameraYaw = Math.PI;
-  G.hud.setObjective(G, 'Escape the police \u2014 lose 3 stars of heat!');
-  advance(G, 4.5, { throttle: 1, steer: 0 });
-  // Frame the pursuit: pull both Interceptors ahead of the Vela GT, in the
-  // chase camera's view, as if they are cutting it off.
-  const px = car.x;
-  const pz = car.z;
-  cop1.x = px - 7;
-  cop1.z = pz + 20;
-  cop1.heading = 0.15;
-  cop1.mesh.position.set(cop1.x, 0, cop1.z);
-  cop1.mesh.rotation.y = cop1.heading;
-  cop2.x = px + 7;
-  cop2.z = pz + 34;
-  cop2.heading = -0.1;
-  cop2.mesh.position.set(cop2.x, 0, cop2.z);
-  cop2.mesh.rotation.y = cop2.heading;
-  updateCamera(G, STEP);
-}
-
-function stageDrive(G) {
-  G.time = 2 * 3600;
-  G.cash = 1250;
-  G.wanted = 0;
-  // Cruising Downtown in the Meridian, traffic and pedestrians around.
-  const car = spawnCar(G, 'meridian', 120, -200, 0, {});
-  enterCar(G, car);
-  car.speed = 18;
-  G.cameraYaw = Math.PI;
-  G.hud.setObjective(G, 'Cruise Downtown \u2014 explore Solmar City');
-  advance(G, 3.5, { throttle: 0.7, steer: 0 });
-}
-
-function stageMission(G) {
-  G.time = 2 * 3600;
-  G.cash = 3100;
-  G.wanted = 2;
-  // No fresh police during the short staged scene: the frame is about the
-  // shootout, and a spawned Interceptor would park itself in front of it.
-  G.police.spawnTimer = 999;
-  G.player.weapon = 'pistol';
-  G.player.ammo.pistol = { mag: 12, reserve: 96 };
-  // Mission 6: the Pier 9 shootout, staged for real.
-  startMission(G, 5);
-  G.player.x = -240;
-  G.player.z = 295;
-  G.player.heading = Math.PI; // facing south, down the pier
-  G.cameraYaw = 0.12;
-  // Kings close in on the pier itself for a denser firefight.
-  spawnEnemy(G, -232, 312, 'king');
-  spawnEnemy(G, -248, 318, 'king');
-  spawnEnemy(G, -226, 300, 'king');
-  spawnEnemy(G, -254, 306, 'king');
-  advance(G, 1.5, null);
-  // Fire a shot at the nearest King LAST, so the tracer and muzzle flash are
-  // still in the frame when it is captured.
-  playerShoot(G);
-}
-
-/**
- * Set the world to the named scene and return; main.js renders twice and
- * sets window.__shotReady.
- */
-export function stageShot(name, G) {
+export function stageShot(name, G, input) {
+  const L = G.landmarks;
   G.screen = 'play';
-  if (name === 'chase') stageChase(G);
-  else if (name === 'drive') stageDrive(G);
-  else if (name === 'mission') stageMission(G);
-  else stageStart(G);
-  updateHud(G, STEP);
+  G.hud.hideOverlays();
+  if (name === 'chase') {
+    // Police chase: Juno in the Vela GT, 3 stars, two Interceptors closing in.
+    const car = spawnCar(G, 'vela', 0, 40, 0, { driver: 'player' });
+    G.player.inCar = car;
+    G.player.mesh.visible = false;
+    car.speed = 30;
+    G.police.addHeat(3);
+    G.police.spawn(2);
+    G.hud.setObjective('Lose the cops — reach the Hills lookout');
+    G.hud.setStars(3);
+    autopilotDrive(G, car, 2.5);
+    settleCamera(G);
+    G.hud.update();
+    return;
+  }
+  if (name === 'drive') {
+    // Cruising Downtown in traffic, pedestrians on the sidewalks.
+    const car = spawnCar(G, 'meridian', 0, -100, 0, { driver: 'player' });
+    G.player.inCar = car;
+    G.player.mesh.visible = false;
+    car.speed = 14;
+    G.hud.setObjective('Cruise Downtown — Solmar is yours to explore');
+    autopilotDrive(G, car, 3.5);
+    settleCamera(G);
+    G.hud.update();
+    return;
+  }
+  if (name === 'mission') {
+    // Mission 6 shootout at Pier 9, on foot, gunmen in view, muzzle flash in the air.
+    G.player.mesh.position.set(-176, 0, 312);
+    G.player.heading = 0;
+    G.player.weapon = 'smg';
+    G.player.ammo = G.player.ammoByWeapon.smg;
+    G.player.ammo.mag = 24;
+    G.missions.index = 5;
+    G.missions.start();
+    G.missions.steps = G.missions.steps.filter((s) => s.type === 'kill');
+    G.missions.stepIndex = 0;
+    G.missions.beginStep();
+    G.camera.yaw = 0;
+    G.camera.pitch = 0.3;
+    for (let i = 0; i < 90; i += 1) {
+      G.time += STEP;
+      stepCombat(G, STEP);
+      stepAmbient(G, STEP);
+    }
+    const dir = new THREE.Vector3(0, -0.05, 1);
+    G.effects.muzzle(new THREE.Vector3(-176, 1.4, 313), dir);
+    G.effects.burst(new THREE.Vector3(-180, 1.2, 322), 0xffc94c, 12, 3, 3);
+    G.hud.setObjective("Kings' Gambit — defeat 8 Harbor Kings gunmen");
+    settleCamera(G);
+    G.hud.update();
+    return;
+  }
+  // Default: start — title screen over a Downtown/Marina vista at golden hour.
+  G.screen = 'title';
+  G.hud.showTitle(false, 'A fresh start in Solmar. Iris is waiting at the cafe.');
+  G.three.camera.position.set(140, 55, 120);
+  G.three.camera.lookAt(30, 12, -30);
+  for (let i = 0; i < 240; i += 1) {
+    G.time += STEP;
+    stepAmbient(G, STEP);
+  }
+  G.hud.update();
 }
