@@ -1,322 +1,400 @@
-// Story: 8 missions for fixer Iris Delgado against the Harbor Kings, plus side jobs —
-// 20 hidden packages, taxi fares and 3 checkpoint street races. Objectives show in the
-// HUD banner and on the minimap; rewards pay cash into the save.
+// Story missions (8, sequential) + repeatable side jobs: taxi fares, 20 hidden
+// packages, 3 checkpoint races. Each mission step is data in config.js; this
+// module interprets the steps, spawns markers and NPCs, and pays the rewards.
 import * as THREE from 'three';
-import { MISSION_DEFS } from './config.js';
-import { spawnCar } from './vehicles.js';
-import { spawnPickup } from './combat.js';
+import { MISSIONS, PACKAGE_SPOTS, RACES, POIS } from './config.js';
+import { spawnGunmen } from './combat.js';
+import { addHeat } from './police.js';
+import { createRandom } from './random.js';
 
-function markerMesh() {
-  const geo = new THREE.ConeGeometry(1.1, 2.4, 4);
-  const mat = new THREE.MeshBasicMaterial({ color: 0xf2c94c, transparent: true, opacity: 0.9 });
-  const m = new THREE.Mesh(geo, mat);
-  m.rotation.x = Math.PI;
-  return m;
-}
-
-function buildSteps(G, def) {
-  const L = G.landmarks;
-  switch (def.id) {
-    case 1:
-      return [{ type: 'goto', pos: L.cafe, radius: 6, text: 'Drive to Iris\'s cafe in Old Town' }];
-    case 2:
-      return [
-        { type: 'steal', model: 'vela', pos: L.marina, radius: 8, text: 'Steal the Vela GT at the Marina' },
-        { type: 'deliver', pos: L.docks, radius: 8, text: 'Deliver the Vela GT to the Docks' },
-      ];
-    case 3:
-      return [{ type: 'taxi', timeLimit: 240, text: 'Taxi fares: 3 pickups across the city' }];
-    case 4:
-      return [
-        { type: 'goto', pos: new THREE.Vector3(0, 0, -60), radius: 5, text: 'Pick up the package in Downtown' },
-        { type: 'kill', count: 4, pos: new THREE.Vector3(30, 0, -60), text: 'Harbor Kings ambush! Fight them off' },
-        { type: 'goto', pos: L.cafe, radius: 6, text: 'Deliver the package to Iris' },
-      ];
-    case 5:
-      return [
-        { type: 'steal', model: 'hauler', pos: L.docks, radius: 8, text: 'Steal the Hauler at the Docks' },
-        { type: 'escape', pos: L.hillsLookout, radius: 10, wanted: 3, text: 'Lose the 3-star chase at the Hills lookout' },
-      ];
-    case 6:
-      return [
-        { type: 'goto', pos: L.pier, radius: 8, text: 'Get to Pier 9' },
-        { type: 'kill', count: 8, pos: L.pierEnd, text: 'Defeat 8 Harbor Kings gunmen' },
-        { type: 'goto', pos: L.marina, radius: 8, text: 'Escape to the Marina in a car' },
-      ];
-    case 7:
-      return [{ type: 'race', timeLimit: 150, text: 'Race the ring road — beat the clock, dodge the spikes' }];
-    case 8:
-      return [
-        { type: 'goto', pos: L.towerGarage, radius: 8, text: 'Infiltrate the Solmar Tower garage' },
-        { type: 'kill', count: 6, pos: L.towerGarage, text: 'Take down Vale\'s crew' },
-        { type: 'escape', pos: L.hillsLookout, radius: 10, wanted: 4, text: 'Getaway — reach the Hills lookout' },
-      ];
-    default:
-      return [];
-  }
+function makeBeacon(scene, color = 0xffd23f) {
+  const g = new THREE.Group();
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.6, 1.6, 60, 12, 1, true),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  beam.position.y = 30;
+  g.add(beam);
+  const diamond = new THREE.Mesh(
+    new THREE.OctahedronGeometry(1.1),
+    new THREE.MeshBasicMaterial({ color }),
+  );
+  diamond.position.y = 6;
+  g.add(diamond);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(3.4, 4.4, 32),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.08;
+  g.add(ring);
+  g.visible = false;
+  scene.add(g);
+  return { group: g, diamond, ring };
 }
 
 export function createMissions(G) {
-  const marker = markerMesh();
-  marker.visible = false;
-  G.scene.add(marker);
-  const pkgMeshes = [];
-  for (const spot of G.landmarks.packageSpots) {
-    const m = new THREE.Mesh(
-      new THREE.BoxGeometry(0.7, 0.7, 0.7),
-      new THREE.MeshLambertMaterial({ color: 0x17a398, emissive: 0x17a398, emissiveIntensity: 0.5 }),
-    );
-    m.position.set(spot.x, 0.9, spot.z);
-    m.visible = !G.save.packages.includes(pkgMeshes.length);
-    G.scene.add(m);
-    pkgMeshes.push({ mesh: m, pos: spot, found: G.save.packages.includes(pkgMeshes.length) });
-  }
-  const M = {
-    index: 0, // 0-based; MISSION_DEFS.length means story complete
-    steps: [],
-    stepIndex: 0,
-    timer: 0,
-    targetCar: null,
-    taxiFares: [],
-    taxiStage: 0,
-    racePoints: [],
-    raceIndex: 0,
-    kills: 0,
-    killsNeeded: 0,
-    marker,
-    pkgMeshes,
-    active: false,
-    race: null,
-    objective: 'Free roam — press M1 to start the story',
-    targetPos: null,
-    start() {
-      if (this.index >= MISSION_DEFS.length) return;
-      const def = MISSION_DEFS[this.index];
-      this.steps = buildSteps(G, def);
-      this.stepIndex = 0;
-      this.active = true;
-      this.kills = 0;
-      this.beginStep();
-      G.hud.banner(`Mission ${def.id}: ${def.name}`, '#f2c94c');
-      G.hud.feed(def.brief);
-      G.audio.missionDone();
-    },
-    beginStep() {
-      const s = this.steps[this.stepIndex];
-      if (!s) { this.complete(); return; }
-      this.objective = s.text;
-      this.targetPos = s.pos || null;
-      this.timer = s.timeLimit || 0;
-      this.marker.visible = !!s.pos;
-      if (s.pos) this.marker.position.set(s.pos.x, 6, s.pos.z);
-      if (s.type === 'steal') {
-        if (this.targetCar) { /* keep the previous one */ }
-        const car = spawnCar(G, s.model, s.pos.x, s.pos.z, 0, { mission: 'stolen' });
-        this.targetCar = car;
-        this.targetPos = s.pos;
-      }
-      if (s.type === 'kill') {
-        this.kills = 0;
-        this.killsNeeded = s.count;
-        const spots = [];
-        for (let i = 0; i < s.count; i += 1) spots.push(new THREE.Vector3(s.pos.x + (i % 4) * 5 - 8, 0, s.pos.z + Math.floor(i / 4) * 6 - 4));
-        G.combat.spawnGunmen(spots, s.count);
-        this.targetPos = s.pos;
-      }
-      if (s.type === 'taxi') this.setupTaxi();
-      if (s.type === 'race') this.setupRace();
-      if (s.type === 'escape') {
-        // The job itself draws the heat: the chase is already on when the escape begins.
-        G.police.addHeat(Math.max(0, s.wanted - G.police.stars));
-      }
-      G.hud.setObjective(this.objective);
-    },
-    setupTaxi() {
-      const spots = [
-        { pick: new THREE.Vector3(-180, 0, 60), drop: new THREE.Vector3(180, 0, -120) },
-        { pick: new THREE.Vector3(120, 0, -180), drop: new THREE.Vector3(-120, 0, 180) },
-        { pick: new THREE.Vector3(0, 0, 180), drop: new THREE.Vector3(240, 0, 60) },
-      ];
-      this.taxiFares = spots;
-      this.taxiStage = 0; // 0 = drive to pickup, 1 = drive to drop
-      this.targetPos = spots[0].pick;
-      this.marker.position.set(spots[0].pick.x, 6, spots[0].pick.z);
-      this.marker.visible = true;
-      this.objective = 'Taxi: pick up the fare at the marker';
-      G.hud.setObjective(this.objective);
-    },
-    setupRace() {
-      const ring = [
-        new THREE.Vector3(0, 0, -270), new THREE.Vector3(270, 0, -270),
-        new THREE.Vector3(270, 0, 270), new THREE.Vector3(0, 0, 270),
-        new THREE.Vector3(-270, 0, 270), new THREE.Vector3(-270, 0, -270),
-        new THREE.Vector3(0, 0, -270),
-      ];
-      this.racePoints = ring;
-      this.raceIndex = 0;
-      this.targetPos = ring[0];
-      this.marker.position.set(ring[0].x, 6, ring[0].z);
-      this.marker.visible = true;
-      this.objective = 'Race: hit every ring-road checkpoint';
-      G.hud.setObjective(this.objective);
-    },
-    nextStep() {
-      this.stepIndex += 1;
-      if (this.stepIndex >= this.steps.length) this.complete();
-      else this.beginStep();
-    },
-    complete() {
-      const def = MISSION_DEFS[this.index];
-      const p = G.player;
-      p.cash += def.reward;
-      G.save.cash = p.cash;
-      G.save.totalEarned += def.reward;
-      if (!G.save.missionsDone.includes(def.id)) G.save.missionsDone.push(def.id);
-      G.hud.banner(`Mission complete: ${def.name} — $${def.reward}`, '#3ad86b');
-      G.hud.feed(`Iris: "Nice work, Juno. $${def.reward} is yours."`);
-      G.audio.missionDone();
-      G.combat.clearEnemies();
-      this.marker.visible = false;
-      this.targetPos = null;
-      this.active = false;
-      this.index += 1;
-      if (this.index >= MISSION_DEFS.length) {
-        this.objective = 'SOLMAR IS YOURS — story complete. Free roam!';
-        G.hud.showEnd('SOLMAR IS YOURS', `All 8 missions done. You earned $${G.save.totalEarned} working for Iris.`);
-        G.screen = 'over';
-      } else {
-        // The next mission starts at once — the story never makes you wait.
-        this.start();
-      }
-      G.hud.setObjective(this.objective);
-    },
-    fail(reason) {
-      G.hud.banner(`Mission failed: ${reason}`, '#ff6b4a');
-      G.audio.fail();
-      G.combat.clearEnemies();
-      this.active = false;
-      this.marker.visible = false;
-      this.targetPos = null;
-      this.objective = 'Mission failed — drive to the cafe to retry';
-      this.targetPos = G.landmarks.cafe;
-      this.marker.visible = true;
-      this.marker.position.set(G.landmarks.cafe.x, 6, G.landmarks.cafe.z);
-      G.hud.setObjective(this.objective);
-    },
-    retry() {
-      // Restart the current mission from its first step.
-      this.start();
-    },
-    onKill() {
-      if (!this.active) return;
-      const s = this.steps[this.stepIndex];
-      if (s && s.type === 'kill') {
-        this.kills += 1;
-        this.objective = `${s.text} (${this.kills}/${this.killsNeeded} down)`;
-        G.hud.setObjective(this.objective);
-        if (this.kills >= this.killsNeeded) this.nextStep();
-      }
-    },
-    step(dt) {
-      // Marker bob + spin.
-      if (this.marker.visible) {
-        this.marker.rotation.y += dt * 2;
-        this.marker.position.y = 6 + Math.sin(G.time * 2.5) * 0.5;
-      }
-      // Packages: collectible side job, $50 each.
-      const p = G.player;
-      for (let i = 0; i < this.pkgMeshes.length; i += 1) {
-        const pkg = this.pkgMeshes[i];
-        if (pkg.found) continue;
-        pkg.mesh.rotation.y += dt;
-        const d = Math.hypot(pkg.pos.x - p.mesh.position.x, pkg.pos.z - p.mesh.position.z);
-        if (d < 2 && !p.inCar) {
-          pkg.found = true;
-          pkg.mesh.visible = false;
-          G.save.packages.push(i);
-          p.cash += 50;
-          G.save.cash = p.cash;
-          G.audio.pickup();
-          G.hud.feed(`Package found! $50 (${G.save.packages.length}/20).`);
-          if (G.save.packages.length === 20) {
-            p.cash += 500;
-            G.save.cash = p.cash;
-            G.hud.banner('All 20 packages! Bonus $500.', '#3ad86b');
-          }
-        }
-      }
-      if (!this.active) return;
-      const s = this.steps[this.stepIndex];
-      if (!s) return;
-      if (s.timeLimit) {
-        this.timer -= dt;
-        if (this.timer <= 0) { this.fail('Out of time.'); return; }
-        G.hud.setTimer(Math.max(0, Math.ceil(this.timer)));
-      }
-      const pos = p.inCar ? p.inCar.mesh.position : p.mesh.position;
-      const distTo = (target) => Math.hypot(target.x - pos.x, target.z - pos.z);
-      if (s.type === 'goto' || s.type === 'deliver') {
-        if (distTo(s.pos) < s.radius) this.nextStep();
-      } else if (s.type === 'steal') {
-        if (p.inCar === this.targetCar) {
-          G.police.addHeat(1);
-          this.nextStep();
-        }
-      } else if (s.type === 'escape') {
-        if (G.police.stars >= s.wanted) {
-          // Once the heat is on, reaching the spot clears the chase.
-          if (distTo(s.pos) < s.radius) {
-            G.police.clearStars();
-            this.nextStep();
-          }
-        } else if (distTo(s.pos) < s.radius) {
-          // Arrived before the heat: wait for the cops, or just move on.
-          this.objective = `${s.text} — get the cops on you first!`;
-          G.hud.setObjective(this.objective);
-        }
-      } else if (s.type === 'taxi') {
-        const fare = this.taxiFares[Math.floor(this.taxiStage / 2)];
-        if (!fare) { this.nextStep(); return; }
-        if (this.taxiStage % 2 === 0) {
-          if (distTo(fare.pick) < 6 && p.inCar) {
-            this.taxiStage += 1;
-            this.targetPos = fare.drop;
-            this.marker.position.set(fare.drop.x, 6, fare.drop.z);
-            this.objective = 'Taxi: take the fare to the drop-off';
-            G.hud.setObjective(this.objective);
-            G.hud.feed('Fare: "Step on it!"');
-          }
-        } else if (distTo(fare.drop) < 6 && p.inCar) {
-          p.cash += 120;
-          G.save.cash = p.cash;
-          G.audio.pickup();
-          G.hud.feed('Fare paid $120.');
-          this.taxiStage += 1;
-          if (this.taxiStage / 2 >= this.taxiFares.length) this.nextStep();
-          else {
-            const next = this.taxiFares[this.taxiStage / 2];
-            this.targetPos = next.pick;
-            this.marker.position.set(next.pick.x, 6, next.pick.z);
-            this.objective = 'Taxi: pick up the next fare';
-            G.hud.setObjective(this.objective);
-          }
-        }
-      } else if (s.type === 'race') {
-        const point = this.racePoints[this.raceIndex];
-        if (point && distTo(point) < 10) {
-          this.raceIndex += 1;
-          if (this.raceIndex >= this.racePoints.length) this.nextStep();
-          else {
-            const next = this.racePoints[this.raceIndex];
-            this.targetPos = next;
-            this.marker.position.set(next.x, 6, next.z);
-            this.objective = `Race: checkpoint ${this.raceIndex + 1}/${this.racePoints.length}`;
-            G.hud.setObjective(this.objective);
-          }
-        }
-      }
-      // Kill steps advance through onKill(); the marker stays on the fight.
-    },
+  const beacon = makeBeacon(G.scene);
+  const state = {
+    active: null, // { def, stepIdx, runtime }
+    done: [],
+    packagesFound: new Set(),
+    packagesBonusPaid: false,
+    taxiFare: null,
+    raceRun: null,
+    beacon,
+    objective: 'Free roam — Solmar is yours.',
+    objectiveDist: null,
+    marker: null,
+    completeBanner: null,
   };
-  return M;
+  // The object the game holds onto must stay live. The mission state is
+  // reassigned as missions start and finish (active, objective, marker, the
+  // done list), so a plain copy of it goes stale: the HUD, the save and the
+  // restart button would all read yesterday's mission — a finished mission
+  // would never show in `done`, and a save would forget it. Every field
+  // below is an accessor that forwards reads and writes to the one true
+  // state object, so the outside world always sees the current mission.
+  return {
+    get active() { return state.active; },
+    set active(v) { state.active = v; },
+    get done() { return state.done; },
+    set done(v) { state.done = v; },
+    get packagesFound() { return state.packagesFound; },
+    set packagesFound(v) { state.packagesFound = v; },
+    get packagesBonusPaid() { return state.packagesBonusPaid; },
+    set packagesBonusPaid(v) { state.packagesBonusPaid = v; },
+    get taxiFare() { return state.taxiFare; },
+    set taxiFare(v) { state.taxiFare = v; },
+    get raceRun() { return state.raceRun; },
+    set raceRun(v) { state.raceRun = v; },
+    get beacon() { return state.beacon; },
+    get objective() { return state.objective; },
+    set objective(v) { state.objective = v; },
+    get objectiveDist() { return state.objectiveDist; },
+    set objectiveDist(v) { state.objectiveDist = v; },
+    get marker() { return state.marker; },
+    set marker(v) { state.marker = v; },
+    get completeBanner() { return state.completeBanner; },
+    set completeBanner(v) { state.completeBanner = v; },
+    start(id) { startMission(G, state, id); },
+    update(dt) { updateMissions(G, state, dt); },
+    onEnterCar(car) { onEnterCar(G, state, car); },
+    onGunmanDown(g) { onGunmanDown(G, state, g); },
+    startTaxiFare() { startTaxiFare(G, state); },
+    collectPackage(i) { collectPackage(G, state, i); },
+  };
+}
+
+function startMission(G, state, id) {
+  const def = MISSIONS.find((m) => m.id === id);
+  if (!def) return;
+  state.active = { def, stepIdx: 0, runtime: {} };
+  state.objective = `${def.title} — ${def.steps[0].label}`;
+  if (G.hud) {
+    G.hud.banner(def.title, def.intro);
+    G.hud.toast(`Mission started: ${def.title}`);
+  }
+  if (G.audio) G.audio.sting('start');
+  enterStep(G, state);
+}
+
+function enterStep(G, state) {
+  const step = state.active.def.steps[state.active.stepIdx];
+  const rt = state.active.runtime;
+  state.marker = null;
+  if (step.type === 'driveTo' || step.type === 'deliver') {
+    state.marker = { x: step.x, z: step.z };
+  } else if (step.type === 'steal') {
+    // Point at the nearest car of that model.
+    const car = [...G.cars, ...G.traffic].find((c) => c.model === step.model);
+    state.marker = car ? { x: car.x, z: car.z, car } : null;
+  } else if (step.type === 'taxi') {
+    rt.faresLeft = step.count;
+    rt.phase = 'pickup';
+    rt.pickup = randomRoadPoint(G);
+    rt.drop = randomRoadPoint(G);
+    state.marker = { x: rt.pickup[0], z: rt.pickup[1] };
+  } else if (step.type === 'carry') {
+    state.marker = { x: step.x, z: step.z };
+    spawnGunmen(G, G.player.x, G.player.z, 3, 12);
+    addHeat(G, 1);
+  } else if (step.type === 'shootout') {
+    state.marker = { x: step.x, z: step.z };
+    rt.toKill = step.count;
+    rt.killed = 0;
+    spawnGunmen(G, step.x, step.z, step.count, step.radius ?? 18);
+  } else if (step.type === 'race') {
+    rt.cpIdx = 0;
+    rt.timeLeft = step.timeLimit;
+    rt.checkpoints = step.checkpoints;
+    state.marker = { x: step.checkpoints[0][0], z: step.checkpoints[0][1] };
+  }
+  state.objective = `${state.active.def.title} — ${step.label}`;
+  updateBeacon(G, state);
+}
+
+function randomRoadPoint(G) {
+  const rng = createRandom((Math.random() * 1e9) | 0);
+  const axes = [-240, -120, 0, 120, 240];
+  const a = axes[Math.floor(rng() * axes.length)];
+  const b = -240 + rng() * 480;
+  return rng() < 0.5 ? [a, b] : [b, a];
+}
+
+function updateBeacon(G, state) {
+  const b = state.beacon;
+  if (state.marker) {
+    b.group.visible = true;
+    b.group.position.set(state.marker.x, 0, state.marker.z);
+  } else {
+    b.group.visible = false;
+  }
+}
+
+function completeStep(G, state) {
+  const m = state.active;
+  m.stepIdx += 1;
+  if (m.stepIdx >= m.def.steps.length) {
+    completeMission(G, state);
+  } else {
+    enterStep(G, state);
+    if (G.hud) G.hud.toast('Objective complete.');
+    if (G.audio) G.audio.chime();
+  }
+}
+
+function completeMission(G, state) {
+  const m = state.active;
+  G.player.cash += m.def.reward;
+  state.done.push(m.def.id);
+  if (G.hud) {
+    G.hud.banner('MISSION COMPLETE', `${m.def.title} — +$${m.def.reward}`);
+    G.hud.feed(`Mission complete: ${m.def.title} (+$${m.def.reward})`);
+  }
+  if (G.audio) G.audio.sting('complete');
+  state.active = null;
+  state.marker = null;
+  state.objective = 'Free roam — Solmar is yours.';
+  updateBeacon(G, state);
+  const next = MISSIONS.find((x) => x.id === m.def.id + 1);
+  if (next) {
+    setTimeout(() => {
+      if (G.screen === 'play' && !state.active) startMission(G, state, next.id);
+    }, 4000);
+  } else {
+    // Finale done — the city is yours.
+    if (G.hud) G.hud.banner('SOLMAR IS YOURS', 'You finished every story mission. Free roam, collect packages, race, and rule the city.');
+    G.gameComplete = true;
+  }
+}
+
+function onEnterCar(G, state, car) {
+  const m = state.active;
+  if (!m) return;
+  const step = m.def.steps[m.stepIdx];
+  if (step.type === 'steal' && car.model === step.model) {
+    if (G.hud) G.hud.toast(`Got the ${car.def.name}. Now deliver it.`);
+    completeStep(G, state);
+  }
+}
+
+function onGunmanDown(G, state) {
+  const m = state.active;
+  if (!m) return;
+  const step = m.def.steps[m.stepIdx];
+  if (step.type === 'shootout') {
+    m.runtime.killed += 1;
+    state.objective = `${m.def.title} — ${step.label} (${m.runtime.killed}/${step.count})`;
+    if (m.runtime.killed >= step.count) completeStep(G, state);
+  }
+}
+
+function startTaxiFare(G, state) {
+  if (state.taxiFare || state.active) return;
+  const pickup = randomRoadPoint(G);
+  const drop = randomRoadPoint(G);
+  state.taxiFare = { phase: 'pickup', pickup, drop, tip: 0, startedAt: G.time };
+  state.marker = { x: pickup[0], z: pickup[1] };
+  state.objective = 'Taxi fare — pick up the passenger';
+  updateBeacon(G, state);
+  if (G.hud) G.hud.toast('Taxi fare — pick up the passenger (yellow marker).');
+}
+
+function collectPackage(G, state, i) {
+  if (state.packagesFound.has(i)) return;
+  state.packagesFound.add(i);
+  G.player.cash += 50;
+  G.city.packageMeshes[i].visible = false;
+  if (G.hud) G.hud.toast(`Package found! +$50 (${state.packagesFound.size}/20)`);
+  if (G.audio) G.audio.chime();
+  if (state.packagesFound.size === 20 && !state.packagesBonusPaid) {
+    state.packagesBonusPaid = true;
+    G.player.cash += 500;
+    if (G.hud) G.hud.banner('ALL PACKAGES FOUND', 'Every hidden package in Solmar — +$500 bonus.');
+  }
+}
+
+function updateMissions(G, state, dt) {
+  // Beacon animation.
+  if (state.beacon.group.visible) {
+    state.beacon.diamond.rotation.y += dt * 2;
+    state.beacon.diamond.position.y = 6 + Math.sin(G.time * 2.4) * 0.5;
+  }
+  // Packages: proximity collect.
+  const p = G.player;
+  for (let i = 0; i < PACKAGE_SPOTS.length; i += 1) {
+    if (state.packagesFound.has(i)) continue;
+    const [px, pz] = PACKAGE_SPOTS[i];
+    if (Math.hypot(px - p.x, pz - p.z) < 2.2) collectPackage(G, state, i);
+  }
+  // Taxi side job: entering a taxi with no active mission starts a fare.
+  if (!state.active && !state.taxiFare && p.car && p.car.model === 'taxi') {
+    startTaxiFare(G, state);
+  }
+  // Taxi fare progress.
+  if (state.taxiFare) {
+    const fare = state.taxiFare;
+    const target = fare.phase === 'pickup' ? fare.pickup : fare.drop;
+    const d = Math.hypot(target[0] - p.x, target[1] - p.z);
+    state.objectiveDist = d;
+    state.marker = { x: target[0], z: target[1] };
+    updateBeacon(G, state);
+    if (d < 8) {
+      if (fare.phase === 'pickup') {
+        fare.phase = 'drop';
+        state.objective = 'Taxi fare — drop the passenger off';
+        if (G.hud) G.hud.toast('Passenger aboard — drive to the drop-off.');
+      } else {
+        const time = G.time - fare.startedAt;
+        const tip = time < 90 ? 40 : time < 150 ? 20 : 0;
+        const pay = 80 + tip;
+        p.cash += pay;
+        if (G.hud) G.hud.toast(`Fare complete — +$${pay}${tip ? ` (incl. $${tip} tip)` : ''}`);
+        if (G.audio) G.audio.chime();
+        state.taxiFare = null;
+        state.marker = null;
+        state.objective = state.active ? state.objective : 'Free roam — Solmar is yours.';
+        updateBeacon(G, state);
+      }
+    }
+    return;
+  }
+  // Race runs (side-job checkpoint races, started by driving into the start ring).
+  if (!state.active && !state.raceRun && p.car) {
+    for (const race of RACES) {
+      const [sx, sz] = race.checkpoints[0];
+      if (Math.hypot(sx - p.x, sz - p.z) < 10) {
+        state.raceRun = { race, cpIdx: 1, time: 0 };
+        state.marker = { x: race.checkpoints[1][0], z: race.checkpoints[1][1] };
+        state.objective = `${race.name} — checkpoint 2/${race.checkpoints.length}`;
+        updateBeacon(G, state);
+        if (G.hud) G.hud.toast(`${race.name} started! Hit every checkpoint.`);
+        break;
+      }
+    }
+  }
+  if (state.raceRun) {
+    const run = state.raceRun;
+    run.time += dt;
+    const cp = run.race.checkpoints[run.cpIdx];
+    const d = Math.hypot(cp[0] - p.x, cp[1] - p.z);
+    state.objectiveDist = d;
+    if (d < 10) {
+      run.cpIdx += 1;
+      if (run.cpIdx >= run.race.checkpoints.length) {
+        const best = G.saveData?.bestRaces?.[run.race.id];
+        const isBest = !best || run.time < best;
+        if (isBest) {
+          G.saveData.bestRaces[run.race.id] = Math.round(run.time * 10) / 10;
+        }
+        p.cash += run.race.reward;
+        if (G.hud) G.hud.banner('RACE WON', `${run.race.name} — ${run.time.toFixed(1)}s${isBest ? ' (new best!)' : ''} — +$${run.race.reward}`);
+        if (G.audio) G.audio.sting('complete');
+        state.raceRun = null;
+        state.marker = null;
+        state.objective = 'Free roam — Solmar is yours.';
+        updateBeacon(G, state);
+      } else {
+        state.marker = { x: run.race.checkpoints[run.cpIdx][0], z: run.race.checkpoints[run.cpIdx][1] };
+        state.objective = `${run.race.name} — checkpoint ${run.cpIdx + 1}/${run.race.checkpoints.length}`;
+        updateBeacon(G, state);
+      }
+    }
+    return;
+  }
+  // Active story mission progress.
+  const m = state.active;
+  if (!m) return;
+  const step = m.def.steps[m.stepIdx];
+  const rt = m.runtime;
+  if (step.type === 'driveTo' || step.type === 'deliver') {
+    const d = Math.hypot(step.x - p.x, step.z - p.z);
+    state.objectiveDist = d;
+    if (step.type === 'deliver' && !p.car) return; // Must arrive in the car.
+    if (d < step.radius) completeStep(G, state);
+  } else if (step.type === 'steal') {
+    // Marker follows the nearest car of that model.
+    const car = [...G.cars, ...G.traffic].find((c) => c.model === step.model);
+    if (car) {
+      state.marker = { x: car.x, z: car.z };
+      updateBeacon(G, state);
+      state.objectiveDist = Math.hypot(car.x - p.x, car.z - p.z);
+    }
+  } else if (step.type === 'taxi') {
+    const target = rt.phase === 'pickup' ? rt.pickup : rt.drop;
+    const d = Math.hypot(target[0] - p.x, target[1] - p.z);
+    state.objectiveDist = d;
+    if (d < 8 && p.car) {
+      if (rt.phase === 'pickup') {
+        rt.phase = 'drop';
+        state.marker = { x: rt.drop[0], z: rt.drop[1] };
+        state.objective = `${m.def.title} — Drop the fare off`;
+        updateBeacon(G, state);
+        if (G.hud) G.hud.toast('Fare aboard — drive to the drop-off.');
+      } else {
+        rt.faresLeft -= 1;
+        if (rt.faresLeft <= 0) {
+          completeStep(G, state);
+        } else {
+          rt.phase = 'pickup';
+          rt.pickup = randomRoadPoint(G);
+          rt.drop = randomRoadPoint(G);
+          state.marker = { x: rt.pickup[0], z: rt.pickup[1] };
+          state.objective = `${m.def.title} — Pick up fare ${step.count - rt.faresLeft + 1} of ${step.count}`;
+          updateBeacon(G, state);
+        }
+      }
+    }
+  } else if (step.type === 'carry') {
+    const d = Math.hypot(step.x - p.x, step.z - p.z);
+    state.objectiveDist = d;
+    if (p.car) {
+      if (G.hud) G.hud.toastOnce('carry-on-foot', 'The Drop is on foot — get out of the car.');
+      return;
+    }
+    if (d < step.radius) completeStep(G, state);
+  } else if (step.type === 'race') {
+    rt.timeLeft -= dt;
+    const cp = rt.checkpoints[rt.cpIdx];
+    const d = Math.hypot(cp[0] - p.x, cp[1] - p.z);
+    state.objectiveDist = d;
+    if (d < 12 && p.car) {
+      rt.cpIdx += 1;
+      if (rt.cpIdx >= rt.checkpoints.length) {
+        completeStep(G, state);
+      } else {
+        state.marker = { x: rt.checkpoints[rt.cpIdx][0], z: rt.checkpoints[rt.cpIdx][1] };
+        state.objective = `${m.def.title} — checkpoint ${rt.cpIdx + 1}/${rt.checkpoints.length} (${Math.ceil(rt.timeLeft)}s left)`;
+        updateBeacon(G, state);
+      }
+    }
+    if (rt.timeLeft <= 0) {
+      if (G.hud) G.hud.banner('MISSION FAILED', 'Out of time on The Long Way Home. Try again from the pause menu.');
+      state.active = null;
+      state.marker = null;
+      state.objective = 'Free roam — Solmar is yours.';
+      updateBeacon(G, state);
+    }
+  }
 }

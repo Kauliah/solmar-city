@@ -6,109 +6,163 @@
 <title>Solmar City — open-world crime game</title>
 <style>
   :root {
-    --panel: rgba(12, 18, 28, 0.62);
-    --border: rgba(255, 255, 255, 0.22);
-    --text: #f4f0e6;
-    --accent: #ff6b4a;
-    --teal: #17a398;
-    --gold: #f2c94c;
+    --sky: #ffd9a0; --sea: #2e86ab; --sand: #e8c890; --coral: #ff6b4a;
+    --teal: #17a398; --text: #f4efe6; --muted: #c9bda8;
+    --panel: rgba(20, 24, 32, 0.72); --star: #ffd23f;
   }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f2a; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text); }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f2a;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text); }
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; backdrop-filter: blur(3px); }
-  #stars { position: fixed; top: 12px; left: 14px; font-size: 26px; letter-spacing: 2px; text-shadow: 0 2px 6px rgba(0,0,0,0.6); z-index: 5; }
-  #top-right { position: fixed; top: 12px; right: 14px; text-align: right; z-index: 5; font-size: 18px; font-weight: 700; }
-  #top-right #clock { font-size: 15px; font-weight: 500; opacity: 0.85; }
-  #objective-box { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); max-width: 560px; text-align: center; z-index: 5; }
-  #objective { font-size: 15px; font-weight: 600; }
-  #timer { display: none; font-size: 18px; font-weight: 800; color: var(--gold); margin-top: 4px; }
-  #bottom-left { position: fixed; left: 14px; bottom: 14px; z-index: 5; display: flex; flex-direction: column; gap: 8px; }
-  #minimap { width: 168px; height: 168px; border: 2px solid var(--border); border-radius: 8px; background: rgba(20,28,38,0.85); }
-  .bar { width: 168px; height: 12px; background: rgba(0,0,0,0.5); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-  #health-fill { height: 100%; background: linear-gradient(90deg, #3ad86b, #7ce89b); width: 100%; }
-  #armor-fill { height: 100%; background: linear-gradient(90deg, #2e6bff, #7fb5d9); width: 0%; }
-  #health-num { font-size: 12px; opacity: 0.85; }
-  #bottom-right { position: fixed; right: 14px; bottom: 14px; text-align: right; z-index: 5; }
-  #speed-box { display: none; }
-  #speed { font-size: 40px; font-weight: 800; line-height: 1; text-shadow: 0 2px 8px rgba(0,0,0,0.7); }
-  #speed-unit { font-size: 13px; opacity: 0.8; }
-  #carname { font-size: 15px; font-weight: 600; }
-  #weapon-box { margin-top: 6px; font-size: 14px; }
-  #ammo { font-weight: 800; font-size: 17px; }
-  #crosshair { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 22px; color: rgba(255,255,255,0.9); text-shadow: 0 0 4px #000; z-index: 4; pointer-events: none; }
-  #hitmarker { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(45deg); font-size: 26px; color: #ff2e2e; opacity: 0; z-index: 4; pointer-events: none; font-weight: 900; }
-  #banner { position: fixed; top: 84px; left: 50%; transform: translateX(-50%); font-size: 21px; font-weight: 800; text-shadow: 0 2px 8px rgba(0,0,0,0.8); z-index: 6; opacity: 0; transition: opacity 0.3s; pointer-events: none; white-space: nowrap; }
-  #feed { position: fixed; left: 14px; top: 64px; z-index: 5; font-size: 13px; max-width: 320px; }
-  #feed div { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; margin-bottom: 4px; }
-  #hotwire { position: fixed; left: 50%; top: 58%; transform: translateX(-50%); z-index: 6; display: none; font-size: 16px; font-weight: 700; }
-  #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 3; opacity: 0; transition: opacity 0.15s; background: radial-gradient(ellipse at center, transparent 55%, rgba(200,0,0,0.55) 100%); }
-  .overlay { position: fixed; inset: 0; z-index: 10; display: none; align-items: center; justify-content: center; flex-direction: column; background: linear-gradient(180deg, rgba(10,16,26,0.55), rgba(10,16,26,0.85)); text-align: center; }
-  .overlay h1 { font-size: 64px; margin: 0; letter-spacing: 4px; color: var(--gold); text-shadow: 0 4px 24px rgba(0,0,0,0.8); }
-  .overlay h2 { font-size: 18px; font-weight: 400; margin: 8px 0 24px; opacity: 0.9; }
-  .overlay button { display: block; width: 280px; margin: 6px auto; padding: 12px; font-size: 17px; font-weight: 700; color: var(--text); background: rgba(255,107,74,0.85); border: none; border-radius: 8px; cursor: pointer; }
-  .overlay button.secondary { background: rgba(255,255,255,0.14); }
-  .overlay button:hover { filter: brightness(1.15); }
-  .overlay .keys { font-size: 14px; line-height: 1.9; opacity: 0.9; margin-top: 18px; }
-  #title-stats { font-size: 14px; opacity: 0.85; margin-bottom: 12px; }
-  #end-title { font-size: 56px; }
-  #end-text { font-size: 17px; max-width: 520px; }
+  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, rgba(10,14,22,0.55), rgba(10,14,22,0.82)); z-index: 20; }
+  .screen.on { display: flex; }
+  .panel { background: var(--panel); border: 1px solid rgba(255,255,255,0.14); border-radius: 14px;
+    padding: 28px 34px; max-width: 560px; text-align: center; backdrop-filter: blur(4px); }
+  .panel h1 { margin: 0 0 4px; font-size: 52px; letter-spacing: 2px; color: var(--sky); text-shadow: 0 3px 18px rgba(0,0,0,0.6); }
+  .panel h2 { margin: 0 0 10px; font-size: 26px; color: var(--text); }
+  .panel p { color: var(--muted); line-height: 1.5; margin: 8px 0; }
+  .panel button { display: block; width: 100%; margin: 8px 0; padding: 12px; font-size: 17px;
+    background: var(--coral); color: #fff; border: 0; border-radius: 9px; cursor: pointer; font-weight: 600; }
+  .panel button:hover { filter: brightness(1.12); }
+  .panel button:disabled { opacity: 0.45; cursor: default; }
+  .panel button.ghost { background: rgba(255,255,255,0.12); }
+  .panel ul { text-align: left; color: var(--muted); line-height: 1.7; margin: 10px 0; padding-left: 22px; }
+  #mission-list { list-style: none; padding: 0; columns: 2; text-align: left; color: var(--muted); }
+  #title-stats { font-size: 14px; color: var(--muted); }
+  /* HUD */
+  #hud { position: fixed; inset: 0; pointer-events: none; display: none; z-index: 10; }
+  #hud.on { display: block; }
+  .hud-box { position: absolute; background: var(--panel); border-radius: 9px; padding: 8px 12px;
+    font-size: 15px; line-height: 1.35; }
+  #wanted { top: 12px; left: 12px; font-size: 26px; letter-spacing: 4px; color: var(--star); }
+  #wanted.hot { color: #ff5340; }
+  #wanted.flash { animation: flash 0.4s; }
+  @keyframes flash { 50% { transform: scale(1.25); } }
+  #top-right { top: 12px; right: 12px; text-align: right; font-size: 18px; font-weight: 600; }
+  #top-right small { display: block; font-size: 13px; color: var(--muted); font-weight: 400; }
+  #objective-wrap { top: 12px; left: 50%; transform: translateX(-50%); text-align: center; max-width: 46vw; }
+  #objective { font-weight: 600; }
+  #objective-dist { color: var(--star); font-size: 13px; }
+  #health-wrap { left: 12px; bottom: 12px; width: 240px; }
+  .bar { height: 12px; background: rgba(255,255,255,0.16); border-radius: 6px; overflow: hidden; margin: 4px 0; }
+  #health-fill { height: 100%; width: 100%; background: #4ade80; }
+  #health-fill.low { background: #e5534b; }
+  #armour-fill { height: 100%; width: 0%; background: #6fa8c8; }
+  #health-text { font-size: 13px; color: var(--muted); }
+  #minimap { position: absolute; left: 12px; bottom: 96px; border: 2px solid rgba(255,255,255,0.25);
+    border-radius: 8px; background: #1d2a33; }
+  #speed-wrap { right: 12px; bottom: 12px; text-align: right; }
+  #speed { font-size: 34px; font-weight: 700; }
+  #speed-wrap small { color: var(--muted); }
+  #car-name { font-size: 15px; color: var(--sky); }
+  #ammo { right: 12px; bottom: 96px; font-size: 16px; font-weight: 600; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; }
+  #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(255,255,255,0.9); }
+  #crosshair::before { left: 10px; top: 0; width: 2px; height: 22px; }
+  #crosshair::after { top: 10px; left: 0; height: 2px; width: 22px; }
+  #hitmarker { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px; display: none; }
+  #hitmarker.on { display: block; }
+  #hitmarker::before, #hitmarker::after { content: ''; position: absolute; left: 13px; top: 0; width: 3px; height: 30px;
+    background: #fff; transform: rotate(45deg); }
+  #hitmarker::after { transform: rotate(-45deg); }
+  #feed { position: absolute; left: 12px; top: 64px; font-size: 13px; color: var(--muted); line-height: 1.6; max-width: 320px; }
+  #banner { position: absolute; left: 50%; top: 22%; transform: translateX(-50%); text-align: center;
+    display: none; background: var(--panel); border-radius: 12px; padding: 16px 30px; }
+  #banner.on { display: block; }
+  #banner-title { font-size: 30px; font-weight: 800; color: var(--star); letter-spacing: 1px; }
+  #banner-text { color: var(--text); margin-top: 4px; }
+  #toast { position: absolute; left: 50%; bottom: 130px; transform: translateX(-50%); background: var(--panel);
+    border-radius: 8px; padding: 8px 16px; font-size: 15px; display: none; white-space: nowrap; }
+  #toast.on { display: block; }
+  #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 15; opacity: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(200,30,20,0.55) 100%); }
+  #screen-shop { background: transparent; align-items: flex-end; justify-content: flex-end; }
+  #screen-shop .panel { margin: 0 18px 18px 0; padding: 18px 22px; max-width: 320px; }
+  #shop-items button { margin: 6px 0; padding: 9px; font-size: 15px; }
 </style>
 <script type="importmap">
 { "imports": { "three": "./vendor/three/three.module.min.js" } }
 </script>
 </head>
 <body>
-<canvas id="game" aria-label="Solmar City: open-world crime game"></canvas>
+<canvas id="game" aria-label="Solmar City: an open-world crime game. Drive, steal cars, dodge the police and work off Juno's debt across 8 story missions."></canvas>
 <p id="status" role="status" aria-live="polite"></p>
 <div id="vignette"></div>
-<div id="stars"></div>
-<div id="top-right" class="panel"><div id="cash">$500</div><div id="clock">17:20</div></div>
-<div id="objective-box" class="panel"><div id="objective">Free roam — drive to the cafe to start the story</div><div id="timer"></div></div>
-<div id="feed"></div>
-<div id="banner"></div>
-<div id="crosshair">+</div>
-<div id="hitmarker">✕</div>
-<div id="hotwire" class="panel">Hotwiring…</div>
-<div id="bottom-left">
-  <canvas id="minimap" width="168" height="168"></canvas>
-  <div class="bar"><div id="health-fill"></div></div>
-  <div class="bar"><div id="armor-fill"></div></div>
-  <div id="health-num">100</div>
-</div>
-<div id="bottom-right">
-  <div id="speed-box"><span id="speed">0</span> <span id="speed-unit">km/h</span><div id="carname"></div></div>
-  <div id="weapon-box"><span id="weapon">P-9 Sparrow</span> · <span id="ammo">12 / 120</span></div>
+
+<div id="hud">
+  <div class="hud-box" id="wanted">☆☆☆☆☆</div>
+  <div class="hud-box" id="top-right"><span id="cash">$150</span><small id="clock">17:30</small></div>
+  <div class="hud-box" id="objective-wrap"><div id="objective"></div><div id="objective-dist"></div></div>
+  <canvas id="minimap" width="180" height="180"></canvas>
+  <div class="hud-box" id="health-wrap">
+    <div class="bar"><div id="health-fill"></div></div>
+    <div class="bar" style="height:7px"><div id="armour-fill"></div></div>
+    <div id="health-text">100 HP</div>
+  </div>
+  <div class="hud-box" id="speed-wrap"><span id="speed">0</span> <small>km/h</small><div id="car-name"></div></div>
+  <div class="hud-box" id="ammo">FISTS</div>
+  <div id="crosshair"></div>
+  <div id="hitmarker"></div>
+  <div id="feed"></div>
+  <div id="banner"><div id="banner-title"></div><div id="banner-text"></div></div>
+  <div id="toast"></div>
 </div>
 
-<div id="title-screen" class="overlay">
-  <h1>SOLMAR CITY</h1>
-  <h2>Sun, sea, and a debt to pay. Juno Reyes works it off — one job at a time.</h2>
-  <div id="title-stats"></div>
-  <button id="continue-btn">Continue</button>
-  <button id="new-btn">New Game</button>
-  <button id="how-btn" class="secondary">How to Play</button>
-  <div class="keys" id="how-text" style="display:none">
-    WASD move / drive · Mouse look · Shift sprint / boost · Space jump / handbrake<br>
-    E enter or steal a car (hold E to hotwire a locked one) · F punch · Click shoot · R reload<br>
-    P pause · M mute · Steal cars, dodge the cops, finish 8 missions for Iris Delgado.
+<div class="screen" id="screen-title">
+  <div class="panel">
+    <h1>SOLMAR CITY</h1>
+    <p>An open-world crime game. Juno Reyes owes fixer Iris Delgado — work it off across 8 story missions, steal cars, outrun the Solmar police, and take the city.</p>
+    <p id="title-stats"></p>
+    <button id="btn-new">New Game</button>
+    <button id="btn-continue" class="ghost">Continue</button>
+    <button id="btn-howto" class="ghost">How to Play</button>
+    <button id="btn-mute" class="ghost">Sound: On</button>
+    <ul id="mission-list"></ul>
   </div>
 </div>
 
-<div id="pause-screen" class="overlay">
-  <h1 id="pause-title">PAUSED</h1>
-  <h2>Solmar waits for no one. Well — right now it does.</h2>
-  <button id="resume-btn">Resume</button>
-  <button id="restart-mission-btn" class="secondary">Restart Mission</button>
-  <button id="quit-btn" class="secondary">Save &amp; Quit to Menu</button>
-  <div class="keys">WASD move / drive · E enter car · F punch · Click shoot · R reload · M mute</div>
+<div class="screen" id="screen-pause">
+  <div class="panel">
+    <h2>Paused</h2>
+    <p>Solmar waits for no one — except now.</p>
+    <button id="btn-resume">Resume</button>
+    <button id="btn-restart-mission" class="ghost">Restart Mission</button>
+    <button id="btn-quit" class="ghost">Save &amp; Quit to Menu</button>
+  </div>
 </div>
 
-<div id="end-screen" class="overlay">
-  <h1 id="end-title">WASTED</h1>
-  <h2 id="end-text"></h2>
-  <button id="again-btn">Play Again</button>
-  <button id="menu-btn" class="secondary">Main Menu</button>
+<div class="screen" id="screen-over">
+  <div class="panel">
+    <h2 id="over-title">BUSTED</h2>
+    <p id="over-text"></p>
+    <button id="btn-play-again">Continue</button>
+  </div>
+</div>
+
+<div class="screen" id="screen-howto">
+  <div class="panel">
+    <h2>How to Play</h2>
+    <ul>
+      <li><b>WASD</b> move / drive · <b>Shift</b> sprint / boost · <b>Space</b> jump / handbrake</li>
+      <li><b>Mouse drag</b> look around · <b>E</b> enter / steal a car · <b>F</b> punch</li>
+      <li><b>Click</b> shoot · <b>R</b> reload · <b>1–4</b> switch weapon · <b>C</b> crouch</li>
+      <li><b>P / Esc</b> pause · <b>M</b> mute</li>
+      <li>Steal cars, lose the police, finish missions for Iris Delgado.</li>
+      <li>Drive into the <b>Tune-Up Garage</b> ($150) to clear your wanted level.</li>
+      <li>Buy weapons at <b>Harbor Hardware</b>, cars at <b>Marina Motors</b>.</li>
+      <li>Find 20 hidden packages ($50 each, $500 bonus for all).</li>
+    </ul>
+    <button id="btn-close-howto">Back</button>
+  </div>
+</div>
+
+<div class="screen" id="screen-shop">
+  <div class="panel">
+    <h2 id="shop-title">Shop</h2>
+    <div id="shop-items"></div>
+    <p style="font-size:13px">Walk away to close.</p>
+  </div>
 </div>
 
 <script type="module" src="./src/main.js"></script>

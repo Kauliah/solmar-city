@@ -1,145 +1,152 @@
-// Pedestrians: walkers strolling the sidewalks, varied clothes and heights, limbs swinging.
-// They flee (with a "!" bubble) when shots or crashes happen nearby, and limp away when hit.
+// Pedestrians: walkers on the sidewalks who stroll between waypoints, flee
+// screaming (a "!" bubble) when shots or crashes happen nearby, and get up and
+// limp away when knocked down. No gore — they clutch and limp.
 import * as THREE from 'three';
-import { AVENUES, STREETS } from './config.js';
-import { pick, range } from './random.js';
-import { createPlayerMesh } from './player.js';
+import { ROAD_AXES } from './config.js';
+import { createRandom } from './random.js';
 
-const PED_COUNT = 24;
-const SHIRT_COLORS = [0xe8a87c, 0xa8c8d8, 0xd8e8c8, 0xf2d8a7, 0xc8a8d8, 0x8ab8a8, 0xe8c8c8];
+const COUNT = 24;
+const SHIRT_COLORS = [0xd86a5a, 0x5a98b8, 0x7fae62, 0xf2c94c, 0x8a6a9a, 0xe8e4d8, 0x2f6fd8, 0xff6b4a];
+const BODY_GEO = new THREE.BoxGeometry(0.55, 1.05, 0.34);
+const HEAD_GEO = new THREE.SphereGeometry(0.26, 10, 8);
+const LEG_GEO = new THREE.BoxGeometry(0.2, 0.8, 0.22);
 
-function sidewalkPoint(rng) {
-  // A point just off a road: on a sidewalk strip.
-  if (rng() < 0.5) {
-    const a = pick(rng, AVENUES);
-    return new THREE.Vector3(a + (rng() < 0.5 ? -9 : 9), 0, range(rng, -280, 280));
-  }
-  const s = pick(rng, STREETS);
-  return new THREE.Vector3(range(rng, -280, 280), 0, s + (rng() < 0.5 ? -9 : 9));
+const shirtMats = new Map();
+function shirtMat(color) {
+  if (!shirtMats.has(color)) shirtMats.set(color, new THREE.MeshStandardMaterial({ color, roughness: 0.9 }));
+  return shirtMats.get(color);
+}
+const skinMat = new THREE.MeshStandardMaterial({ color: 0xd8a878, roughness: 0.85 });
+const pantsMat = new THREE.MeshStandardMaterial({ color: 0x2a3040, roughness: 0.95 });
+
+function makePedMesh(color, height) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(BODY_GEO, shirtMat(color));
+  body.position.y = 1.15 * height;
+  body.castShadow = true;
+  g.add(body);
+  const head = new THREE.Mesh(HEAD_GEO, skinMat);
+  head.position.y = 1.78 * height;
+  head.castShadow = true;
+  g.add(head);
+  const legL = new THREE.Mesh(LEG_GEO, pantsMat);
+  legL.position.set(-0.14, 0.4 * height, 0);
+  g.add(legL);
+  const legR = new THREE.Mesh(LEG_GEO, pantsMat);
+  legR.position.set(0.14, 0.4 * height, 0);
+  g.add(legR);
+  // "!" bubble, hidden until the ped panics.
+  const bubble = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.95, side: THREE.DoubleSide }));
+  bubble.position.y = 2.3 * height;
+  bubble.visible = false;
+  g.add(bubble);
+  return { group: g, legL, legR, bubble };
 }
 
-export function createPedestrians(G) {
-  const peds = { list: [] };
-  for (let i = 0; i < PED_COUNT; i += 1) {
-    spawnWalker(G, 0, 0, 'walk', peds);
+/** A sidewalk waypoint near a road axis. */
+function sidewalkPoint(rng) {
+  const axis = ROAD_AXES[Math.floor(rng() * ROAD_AXES.length)];
+  const along = -260 + rng() * 520;
+  const side = rng() < 0.5 ? -1 : 1;
+  if (rng() < 0.5) return [axis + side * 8.5, along];
+  return [along, axis + side * 8.5];
+}
+
+export function createPeds(G) {
+  const rng = createRandom(G.seed + 202);
+  const peds = [];
+  for (let i = 0; i < COUNT; i += 1) {
+    const color = SHIRT_COLORS[Math.floor(rng() * SHIRT_COLORS.length)];
+    const height = 0.92 + rng() * 0.2;
+    const [x, z] = sidewalkPoint(rng);
+    const [tx, tz] = sidewalkPoint(rng);
+    const { group, legL, legR, bubble } = makePedMesh(color, height);
+    group.position.set(x, 0, z);
+    G.scene.add(group);
+    peds.push({
+      id: `ped-${i}`,
+      x, z, tx, tz,
+      heading: Math.atan2(tx - x, tz - z),
+      speed: 1.1 + rng() * 0.5,
+      state: 'stroll', // stroll | flee | down
+      stateT: 0,
+      walkPhase: rng() * 6,
+      height,
+      mesh: group,
+      legL, legR, bubble,
+      special: null, // 'taxi' | 'mission' — set by missions.js
+    });
   }
   return peds;
 }
 
-export function spawnWalker(G, x, z, state, store) {
-  const list = store ? store.list : G.pedestrians.list;
-  const mesh = createPlayerMesh();
-  const shirtMat = mesh.children[0].material.clone();
-  shirtMat.color = new THREE.Color(pick(G.rng, SHIRT_COLORS));
-  mesh.children[0].material = shirtMat;
-  const scale = range(G.rng, 0.9, 1.12);
-  mesh.scale.setScalar(scale);
-  const pos = (x === 0 && z === 0) ? sidewalkPoint(G.rng) : new THREE.Vector3(x, 0, z);
-  mesh.position.copy(pos);
-  mesh.castShadow = true;
-  G.scene.add(mesh);
-  // "!" bubble shown while fleeing.
-  const bubble = makeBubble(G);
-  bubble.position.set(0, 2.4, 0);
-  mesh.add(bubble);
-  const ped = {
-    mesh, bubble,
-    state: state || 'walk',
-    heading: range(G.rng, 0, Math.PI * 2),
-    speed: range(G.rng, 1.2, 2.0),
-    target: sidewalkPoint(G.rng),
-    fleeFrom: null,
-    downTimer: 0,
-    phase: range(G.rng, 0, Math.PI * 2),
-  };
-  list.push(ped);
-  return ped;
+/** Scare every ped within `radius` of (x, z): they run away from the point. */
+export function scarePeds(G, x, z, radius) {
+  for (const ped of G.peds) {
+    const d = Math.hypot(ped.x - x, ped.z - z);
+    if (d < radius && ped.state !== 'down') {
+      ped.state = 'flee';
+      ped.stateT = 0;
+      ped.fx = ped.x - x;
+      ped.fz = ped.z - z;
+      ped.bubble.visible = true;
+    }
+  }
 }
 
-function makeBubble(G) {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const g = c.getContext('2d');
-  g.fillStyle = '#ffffff';
-  g.beginPath(); g.arc(32, 28, 24, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#ff2e2e';
-  g.font = 'bold 40px system-ui, sans-serif';
-  g.textAlign = 'center';
-  g.fillText('!', 32, 42);
-  const tex = new THREE.CanvasTexture(c);
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
-  sprite.scale.set(1.1, 1.1, 1);
-  sprite.visible = false;
-  return sprite;
-}
-
-export function stepPedestrians(G, dt) {
-  for (const ped of G.pedestrians.list) {
-    if (ped.downTimer > 0) {
-      ped.downTimer -= dt;
-      ped.mesh.rotation.x = -Math.PI / 2 * Math.min(1, ped.downTimer);
-      if (ped.downTimer <= 0) {
-        ped.mesh.rotation.x = 0;
+export function updatePeds(G, dt) {
+  for (const ped of G.peds) {
+    ped.stateT += dt;
+    if (ped.state === 'down') {
+      ped.mesh.position.y = -0.4;
+      if (ped.stateT > 3) {
         ped.state = 'flee';
-        ped.fleeFrom = G.player.mesh.position.clone();
+        ped.stateT = 0;
+        ped.fx = ped.x - G.player.x;
+        ped.fz = ped.z - G.player.z;
+        ped.mesh.position.y = 0;
       }
       continue;
     }
-    let target = ped.target;
+    let targetX = ped.tx;
+    let targetZ = ped.tz;
     let speed = ped.speed;
-    if (ped.state === 'flee' && ped.fleeFrom) {
-      const away = new THREE.Vector3().subVectors(ped.mesh.position, ped.fleeFrom);
-      away.y = 0;
-      if (away.lengthSq() < 0.01) away.set(1, 0, 0);
-      away.normalize();
-      target = new THREE.Vector3().copy(ped.mesh.position).addScaledVector(away, 30);
-      speed = 5.2;
-      ped.bubble.visible = true;
-      if (ped.mesh.position.distanceTo(ped.fleeFrom) > 45) {
-        ped.state = 'walk';
+    if (ped.state === 'flee') {
+      const len = Math.hypot(ped.fx, ped.fz) || 1;
+      targetX = ped.x + (ped.fx / len) * 20;
+      targetZ = ped.z + (ped.fz / len) * 20;
+      speed = ped.speed * 3.2;
+      if (ped.stateT > 6) {
+        ped.state = 'stroll';
         ped.bubble.visible = false;
-        ped.target = sidewalkPoint(G.rng);
+        [ped.tx, ped.tz] = sidewalkPoint(createRandom((Math.random() * 1e9) | 0));
       }
     }
-    const dx = target.x - ped.mesh.position.x;
-    const dz = target.z - ped.mesh.position.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist < 2) {
-      if (ped.state === 'walk') ped.target = sidewalkPoint(G.rng);
+    const dx = targetX - ped.x;
+    const dz = targetZ - ped.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 2) {
+      const rng = createRandom((Math.random() * 1e9) | 0);
+      [ped.tx, ped.tz] = sidewalkPoint(rng);
       continue;
     }
     const want = Math.atan2(dx, dz);
     let dh = want - ped.heading;
     while (dh > Math.PI) dh -= Math.PI * 2;
     while (dh < -Math.PI) dh += Math.PI * 2;
-    ped.heading += Math.max(-2.4 * dt, Math.min(2.4 * dt, dh));
-    ped.mesh.position.x += Math.sin(ped.heading) * speed * dt;
-    ped.mesh.position.z += Math.cos(ped.heading) * speed * dt;
+    ped.heading += Math.max(-3 * dt, Math.min(3 * dt, dh * 6 * dt));
+    ped.x += Math.sin(ped.heading) * speed * dt;
+    ped.z += Math.cos(ped.heading) * speed * dt;
+    // Keep peds off the sea and out of buildings.
+    if (ped.z > 266) ped.z = 266;
+    if (Math.abs(ped.x) > 292) ped.x = Math.sign(ped.x) * 292;
+    if (ped.z < -292) ped.z = -292;
+    ped.walkPhase += dt * speed * 4;
+    const swing = Math.sin(ped.walkPhase) * 0.45;
+    ped.legL.rotation.x = swing;
+    ped.legR.rotation.x = -swing;
+    ped.mesh.position.set(ped.x, 0, ped.z);
     ped.mesh.rotation.y = ped.heading;
-    ped.phase += dt * speed * 2.4;
-    const swing = Math.sin(ped.phase) * 0.5;
-    const u = ped.mesh.userData;
-    u.legL.rotation.x = swing;
-    u.legR.rotation.x = -swing;
-    u.armL.rotation.x = -swing * 0.7;
-    u.armR.rotation.x = swing * 0.7;
+    ped.bubble.lookAt(G.camera.position);
   }
-}
-
-export function fleeFrom(G, pos, radius) {
-  for (const ped of G.pedestrians.list) {
-    const d = Math.hypot(ped.mesh.position.x - pos.x, ped.mesh.position.z - pos.z);
-    if (d < radius && ped.downTimer <= 0) {
-      ped.state = 'flee';
-      ped.fleeFrom = pos.clone();
-    }
-  }
-}
-
-// A hit pedestrian falls, then gets up and limps away. No gore — they clutch and leave.
-export function knockPed(G, ped) {
-  if (ped.downTimer > 0) return;
-  ped.downTimer = 2.2;
-  ped.bubble.visible = false;
-  G.police.addHeat(1);
 }

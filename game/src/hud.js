@@ -1,193 +1,196 @@
-// HUD: DOM panels + a live minimap canvas. This module never touches the simulation —
-// it only reads G and writes the DOM.
-import { PALETTE } from './config.js';
+// HUD: DOM readouts (wanted stars, cash, clock, health/armour, speed, objective,
+// ammo, feed ticker, banners) plus a live top-down minimap canvas. This module
+// never touches the simulation — it only reads G and writes the DOM.
+import { ROAD_AXES, POIS, WEAPONS } from './config.js';
 
-function el(id) { return document.getElementById(id); }
+const STAR_ON = '★';
+const STAR_OFF = '☆';
 
 export function createHud(G) {
-  const minimap = el('minimap');
-  const mctx = minimap.getContext('2d');
-  let bannerTimer = null;
-  let hitTimer = null;
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    hud: $('hud'), wanted: $('wanted'), cash: $('cash'), clock: $('clock'),
+    healthFill: $('health-fill'), armourFill: $('armour-fill'),
+    healthText: $('health-text'), speed: $('speed'), carName: $('car-name'),
+    objective: $('objective'), objectiveDist: $('objective-dist'),
+    ammo: $('ammo'), feed: $('feed'), banner: $('banner'), bannerTitle: $('banner-title'),
+    bannerText: $('banner-text'), toast: $('toast'), vignette: $('vignette'),
+    hitmarker: $('hitmarker'), minimap: $('minimap'), crosshair: $('crosshair'),
+    speedWrap: $('speed-wrap'),
+  };
+  const ctx = el.minimap.getContext('2d');
+  let bannerTimer = 0;
+  let toastTimer = 0;
+  let hitTimer = 0;
+  let vignetteTimer = 0;
+  const onceSeen = new Set();
+  const feedLines = [];
 
   function drawMinimap() {
-    const S = 168;
-    const scale = S / 620;
-    const toMap = (x, z) => [S / 2 + x * scale, S / 2 + z * scale];
-    mctx.clearRect(0, 0, S, S);
-    mctx.fillStyle = 'rgba(20, 28, 38, 0.85)';
-    mctx.fillRect(0, 0, S, S);
-    // Sea + beach along the south edge.
-    mctx.fillStyle = '#2e86ab';
-    mctx.fillRect(0, S - 16, S, 16);
-    mctx.fillStyle = '#e8c890';
-    mctx.fillRect(0, S - 24, S, 8);
+    const w = el.minimap.width;
+    const h = el.minimap.height;
+    const scale = w / 620;
+    const px = (x) => (x + 310) * scale;
+    const pz = (z) => (z + 310) * scale;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#1d2a33';
+    ctx.fillRect(0, 0, w, h);
+    // Land.
+    ctx.fillStyle = '#3d5a3a';
+    ctx.fillRect(0, 0, w, pz(268));
+    // Beach + sea.
+    ctx.fillStyle = '#e8c890';
+    ctx.fillRect(0, pz(268), w, pz(296) - pz(268));
+    ctx.fillStyle = '#2e86ab';
+    ctx.fillRect(0, pz(296), w, h - pz(296));
     // Roads.
-    mctx.strokeStyle = '#8b93a3';
-    mctx.lineWidth = 3;
-    for (const r of G.roads) {
-      const [x0, y0] = toMap(r.x0, r.z0);
-      const [x1, y1] = toMap(r.x1, r.z1);
-      mctx.beginPath(); mctx.moveTo(x0, y0); mctx.lineTo(x1, y1); mctx.stroke();
+    ctx.strokeStyle = '#3a3f47';
+    ctx.lineWidth = 11 * scale;
+    for (const a of ROAD_AXES) {
+      ctx.beginPath(); ctx.moveTo(px(a), 0); ctx.lineTo(px(a), h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, pz(a)); ctx.lineTo(w, pz(a)); ctx.stroke();
     }
-    // Shops / garage markers.
-    const dot = (pos, color, size) => {
-      const [x, y] = toMap(pos.x, pos.z);
-      mctx.fillStyle = color;
-      mctx.fillRect(x - size / 2, y - size / 2, size, size);
-    };
-    dot(G.landmarks.garage, '#3ad86b', 7);
-    dot(G.landmarks.hardware, '#f2c94c', 7);
-    dot(G.landmarks.dealership, '#f2c94c', 7);
-    // Mission marker (pulsing yellow).
-    if (G.missions.targetPos) {
-      const pulse = 6 + Math.sin(G.time * 5) * 2;
-      const [x, y] = toMap(G.missions.targetPos.x, G.missions.targetPos.z);
-      mctx.fillStyle = '#f2c94c';
-      mctx.beginPath(); mctx.arc(x, y, pulse, 0, Math.PI * 2); mctx.fill();
-      mctx.fillStyle = '#1a1a1a';
-      mctx.font = 'bold 10px system-ui';
-      mctx.textAlign = 'center';
-      mctx.fillText('!', x, y + 3.5);
+    ctx.strokeStyle = '#3a3f47';
+    ctx.strokeRect(px(-280), pz(-280), 560 * scale, 560 * scale);
+    // Plaza.
+    ctx.fillStyle = '#9a938a';
+    ctx.fillRect(px(-12), pz(-12), 24 * scale, 24 * scale);
+    // POIs: garage (green), hospital (white), shops (gold).
+    function dot(x, z, color, size = 4) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(px(x), pz(z), size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    dot(POIS.garage.x, POIS.garage.z, '#4ade80');
+    dot(POIS.hospital.x, POIS.hospital.z, '#ffffff');
+    dot(POIS.motors.x, POIS.motors.z, '#f2c94c');
+    dot(POIS.hardware.x, POIS.hardware.z, '#f2c94c');
+    // Mission marker (yellow diamond, pulsing).
+    const m = G.missions?.marker;
+    if (m) {
+      const pulse = 5 + Math.sin(G.time * 5) * 2;
+      ctx.fillStyle = '#ffd23f';
+      ctx.beginPath();
+      ctx.moveTo(px(m.x), pz(m.z) - pulse);
+      ctx.lineTo(px(m.x) + pulse, pz(m.z));
+      ctx.lineTo(px(m.x), pz(m.z) + pulse);
+      ctx.lineTo(px(m.x) - pulse, pz(m.z));
+      ctx.closePath();
+      ctx.fill();
     }
     // Police (flashing blue/red).
-    const flash = Math.floor(G.time * 4) % 2 === 0;
-    for (const c of G.police.cars) {
-      const [x, y] = toMap(c.mesh.position.x, c.mesh.position.z);
-      mctx.fillStyle = flash ? '#ff2e2e' : '#2e6bff';
-      mctx.beginPath(); mctx.arc(x, y, 4, 0, Math.PI * 2); mctx.fill();
+    const flash = Math.sin(G.time * 8) > 0;
+    for (const cop of G.police.cars) {
+      dot(cop.x, cop.z, flash ? '#2f6fd8' : '#e5534b', 3.5);
     }
     // Player arrow.
     const p = G.player;
-    const pos = p.inCar ? p.inCar.mesh.position : p.mesh.position;
-    const heading = p.inCar ? p.inCar.heading : p.heading;
-    const [px, py] = toMap(pos.x, pos.z);
-    mctx.save();
-    mctx.translate(px, py);
-    mctx.rotate(Math.PI - heading);
-    mctx.fillStyle = '#ffffff';
-    mctx.beginPath(); mctx.moveTo(0, -8); mctx.lineTo(5, 6); mctx.lineTo(-5, 6); mctx.closePath(); mctx.fill();
-    mctx.restore();
+    ctx.save();
+    ctx.translate(px(p.x), pz(p.z));
+    ctx.rotate(Math.atan2(Math.sin(p.heading), -Math.cos(p.heading)) + Math.PI);
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, -7);
+    ctx.lineTo(5, 6);
+    ctx.lineTo(0, 3);
+    ctx.lineTo(-5, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
     // North indicator.
-    mctx.fillStyle = '#ffffff';
-    mctx.font = 'bold 11px system-ui';
-    mctx.textAlign = 'left';
-    mctx.fillText('N', 6, 14);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 11px system-ui, sans-serif';
+    ctx.fillText('N', w - 12, 14);
   }
 
-  const hud = {
-    setStars(n) {
-      const s = el('stars');
-      s.innerHTML = '';
-      for (let i = 0; i < 5; i += 1) {
-        const star = document.createElement('span');
-        star.textContent = '★';
-        star.style.color = i < n ? PALETTE.accentCoral === undefined ? '#ffd94c' : '#ffd94c' : 'rgba(255,255,255,0.35)';
-        s.appendChild(star);
+  return {
+    el,
+    update(dt) {
+      const p = G.player;
+      const wanted = G.police.wanted;
+      el.wanted.textContent = STAR_ON.repeat(wanted) + STAR_OFF.repeat(5 - wanted);
+      el.wanted.classList.toggle('hot', wanted >= 3);
+      el.cash.textContent = `$${Math.floor(p.cash)}`;
+      const mins = Math.floor(G.clockMinutes) % 1440;
+      const hh = String(Math.floor(mins / 60)).padStart(2, '0');
+      const mm = String(mins % 60).padStart(2, '0');
+      el.clock.textContent = `${hh}:${mm}`;
+      el.healthFill.style.width = `${Math.max(0, p.health)}%`;
+      el.healthFill.classList.toggle('low', p.health < 30);
+      el.armourFill.style.width = `${Math.max(0, p.armour)}%`;
+      el.healthText.textContent = `${Math.ceil(p.health)} HP${p.armour > 0 ? ` + ${Math.ceil(p.armour)} armour` : ''}`;
+      if (p.car) {
+        el.speedWrap.style.display = 'block';
+        el.speed.textContent = `${Math.round(Math.abs(p.car.speed) * 3.6)}`;
+        el.carName.textContent = p.car.def.name;
+      } else {
+        el.speedWrap.style.display = 'none';
       }
+      const ms = G.missions;
+      el.objective.textContent = ms?.objective ?? '';
+      el.objectiveDist.textContent = ms?.objectiveDist != null ? `${Math.round(ms.objectiveDist)} m` : '';
+      const def = WEAPONS[p.weapon];
+      if (p.weapon === 'fist') {
+        el.ammo.textContent = 'FISTS';
+      } else {
+        const a = p.ammo[p.weapon];
+        el.ammo.textContent = `${def.name.toUpperCase()}  ${a.mag} / ${a.reserve}`;
+      }
+      el.crosshair.style.display = p.car ? 'none' : 'block';
+      if (bannerTimer > 0) {
+        bannerTimer -= dt;
+        if (bannerTimer <= 0) el.banner.classList.remove('on');
+      }
+      if (toastTimer > 0) {
+        toastTimer -= dt;
+        if (toastTimer <= 0) el.toast.classList.remove('on');
+      }
+      if (hitTimer > 0) {
+        hitTimer -= dt;
+        if (hitTimer <= 0) el.hitmarker.classList.remove('on');
+      }
+      if (vignetteTimer > 0) {
+        vignetteTimer -= dt;
+        el.vignette.style.opacity = String(Math.max(0, vignetteTimer / 0.5) * 0.55);
+        if (vignetteTimer <= 0) el.vignette.style.opacity = '0';
+      }
+      drawMinimap();
     },
-    setCash(cash) { el('cash').textContent = `$${Math.floor(cash).toLocaleString('en-US')}`; },
-    setClock() {
-      const total = 17 * 60 + 20 + Math.floor(G.time / 2);
-      const hh = String(Math.floor(total / 60) % 24).padStart(2, '0');
-      const mm = String(total % 60).padStart(2, '0');
-      el('clock').textContent = `${hh}:${mm}`;
+    banner(title, text) {
+      el.bannerTitle.textContent = title;
+      el.bannerText.textContent = text ?? '';
+      el.banner.classList.add('on');
+      bannerTimer = 4;
     },
-    setHealth(h, armor) {
-      el('health-fill').style.width = `${Math.max(0, h)}%`;
-      el('armor-fill').style.width = `${Math.max(0, armor)}%`;
-      el('health-num').textContent = `${Math.ceil(h)}`;
+    toast(text) {
+      el.toast.textContent = text;
+      el.toast.classList.add('on');
+      toastTimer = 3.5;
     },
-    setSpeed(kmh, carName) {
-      el('speed').textContent = `${Math.round(kmh)}`;
-      el('carname').textContent = carName || '';
-    },
-    setCar(name) {
-      el('carname').textContent = name || '';
-      el('speed-box').style.display = name ? 'block' : 'none';
-    },
-    setAmmo(mag, reserve, name) {
-      el('ammo').textContent = name === 'Fists' ? 'FISTS' : `${mag} / ${reserve}`;
-      el('weapon').textContent = name;
-    },
-    setObjective(text) { el('objective').textContent = text; },
-    setTimer(seconds) {
-      const t = el('timer');
-      if (seconds > 0) { t.style.display = 'block'; t.textContent = `⏱ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; }
-      else t.style.display = 'none';
-    },
-    setHotwire(frac) {
-      const h = el('hotwire');
-      if (frac > 0) {
-        h.style.display = 'block';
-        h.textContent = `Hotwiring… ${Math.round(frac * 100)}%`;
-      } else h.style.display = 'none';
-    },
-    banner(text, color) {
-      const b = el('banner');
-      b.textContent = text;
-      b.style.color = color || '#f4f0e6';
-      b.style.opacity = '1';
-      if (bannerTimer) clearTimeout(bannerTimer);
-      bannerTimer = setTimeout(() => { b.style.opacity = '0'; }, 3200);
+    toastOnce(key, text) {
+      if (onceSeen.has(key)) return;
+      onceSeen.add(key);
+      this.toast(text);
     },
     feed(text) {
-      const f = el('feed');
-      const line = document.createElement('div');
-      line.textContent = text;
-      f.prepend(line);
-      while (f.children.length > 4) f.removeChild(f.lastChild);
-      setTimeout(() => { if (line.parentNode) line.remove(); }, 9000);
+      feedLines.unshift(text);
+      if (feedLines.length > 4) feedLines.pop();
+      el.feed.innerHTML = feedLines.map((l) => `<div>${l}</div>`).join('');
     },
     hitmarker() {
-      const h = el('hitmarker');
-      h.style.opacity = '1';
-      if (hitTimer) clearTimeout(hitTimer);
-      hitTimer = setTimeout(() => { h.style.opacity = '0'; }, 180);
+      el.hitmarker.classList.add('on');
+      hitTimer = 0.25;
     },
-    flashDamage() {
-      const v = el('vignette');
-      v.style.opacity = '0.75';
-      setTimeout(() => { v.style.opacity = '0'; }, 220);
+    damageFlash() {
+      vignetteTimer = 0.5;
     },
-    showTitle(canContinue, stats) {
-      el('title-screen').style.display = 'flex';
-      el('pause-screen').style.display = 'none';
-      el('end-screen').style.display = 'none';
-      el('continue-btn').style.display = canContinue ? 'block' : 'none';
-      el('title-stats').textContent = stats || '';
-    },
-    showPause() {
-      el('title-screen').style.display = 'none';
-      el('pause-screen').style.display = 'flex';
-      el('end-screen').style.display = 'none';
-    },
-    showEnd(title, text) {
-      el('end-title').textContent = title;
-      el('end-text').textContent = text;
-      el('title-screen').style.display = 'none';
-      el('pause-screen').style.display = 'none';
-      el('end-screen').style.display = 'flex';
-    },
-    hideOverlays() {
-      el('title-screen').style.display = 'none';
-      el('pause-screen').style.display = 'none';
-      el('end-screen').style.display = 'none';
-    },
-    update() {
-      const p = G.player;
-      this.setHealth(p.health, p.armor);
-      this.setCash(p.cash);
-      this.setClock();
-      if (p.inCar) this.setSpeed(Math.abs(p.inCar.speed) * 3.6, p.inCar.def.name);
-      else this.setSpeed(0, null);
-      const w = p.weapon === 'fists' ? { name: 'Fists' } : null;
-      const weaponName = { fists: 'Fists', pistol: 'P-9 Sparrow', smg: 'Hornet-9', shotgun: 'Boomstick' }[p.weapon];
-      this.setAmmo(p.ammo.mag, p.ammo.reserve, weaponName);
-      drawMinimap();
-      // Low health pulse.
-      el('vignette').style.opacity = p.health < 30 ? String(0.25 + Math.sin(G.time * 6) * 0.1) : '';
+    flashWanted() {
+      el.wanted.classList.add('flash');
+      setTimeout(() => el.wanted.classList.remove('flash'), 400);
     },
   };
-  return hud;
 }

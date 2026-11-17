@@ -1,267 +1,288 @@
-// Combat: hitscan weapons with tracers and muzzle flash, Harbor Kings gunmen who take
-// cover and shoot in bursts, and health/ammo pickups. No gore — gunmen fall and stay down.
+// Combat: hitscan weapons with tracers and muzzle flash, enemy gunmen AI that
+// takes cover and shoots in bursts with aim error, and health/ammo pickups.
+// No gore — gunmen clutch and fall, then stay down.
 import * as THREE from 'three';
 import { WEAPONS } from './config.js';
-import { clamp } from './random.js';
+import { createRandom } from './random.js';
 import { damagePlayer } from './player.js';
-import { knockPed } from './pedestrians.js';
+import { addHeat } from './police.js';
+import { scarePeds } from './pedestrians.js';
 
-function tracerLine(G, from, to) {
-  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.9 }));
-  G.scene.add(line);
-  setTimeout(() => { G.scene.remove(line); geo.dispose(); }, 70);
-}
+const GUNMAN_GEO = new THREE.BoxGeometry(0.62, 1.1, 0.36);
+const GUNMAN_HEAD = new THREE.SphereGeometry(0.27, 10, 8);
+const PICKUP_GEO = new THREE.BoxGeometry(0.7, 0.5, 0.7);
 
 export function createCombat(G) {
   return {
-    enemies: [],
-    fireTimer: 0,
-    muzzle: null,
-    spawnGunmen(positions, count) {
-      for (let i = 0; i < count; i += 1) {
-        const pos = positions[i % positions.length];
-        const mesh = makeGunman(G);
-        mesh.position.set(pos.x + (Math.random() - 0.5) * 6, 0, pos.z + (Math.random() - 0.5) * 6);
-        G.scene.add(mesh);
-        const enemy = { mesh, health: 100, state: 'fight', shootTimer: 1 + Math.random(), burst: 0, bar: makeHealthBar() };
-        enemy.bar.position.set(0, 2.3, 0);
-        mesh.add(enemy.bar);
-        this.enemies.push(enemy);
-      }
-    },
-    clearEnemies() {
-      for (const e of this.enemies) G.scene.remove(e.mesh);
-      this.enemies = [];
-    },
-    aliveCount() {
-      return this.enemies.filter((e) => e.health > 0).length;
-    },
+    gunmen: [],
+    pickups: [],
+    tracers: [],
+    lastShot: -99,
+    firing: false,
   };
 }
 
-function makeGunman(G) {
-  const group = new THREE.Group();
-  const suit = new THREE.MeshLambertMaterial({ color: 0x2a2a3a });
-  const skin = new THREE.MeshLambertMaterial({ color: 0xb87a4a });
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.8, 0.4), suit);
-  torso.position.y = 1.15;
-  torso.castShadow = true;
-  group.add(torso);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 10), skin);
-  head.position.y = 1.78;
-  group.add(head);
-  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.14, 0.5), new THREE.MeshLambertMaterial({ color: 0x8a1a1a }));
-  cap.position.y = 1.98;
-  group.add(cap);
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.7), new THREE.MeshLambertMaterial({ color: 0x111111 }));
-  gun.position.set(0.3, 1.3, 0.4);
-  group.add(gun);
-  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.78, 0.26), suit);
-  legL.position.set(-0.17, 0.39, 0);
-  group.add(legL);
-  const legR = legL.clone();
-  legR.position.x = 0.17;
-  group.add(legR);
-  return group;
+function makeGunmanMesh() {
+  const g = new THREE.Group();
+  const coat = new THREE.MeshStandardMaterial({ color: 0x3a2a4a, roughness: 0.9 });
+  const body = new THREE.Mesh(GUNMAN_GEO, coat);
+  body.position.y = 1.15;
+  body.castShadow = true;
+  g.add(body);
+  const head = new THREE.Mesh(GUNMAN_HEAD, new THREE.MeshStandardMaterial({ color: 0xc89878, roughness: 0.85 }));
+  head.position.y = 1.8;
+  g.add(head);
+  // Health bar above the head.
+  const barBg = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.12), new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.8, side: THREE.DoubleSide }));
+  barBg.position.y = 2.25;
+  g.add(barBg);
+  const bar = new THREE.Mesh(new THREE.PlaneGeometry(1.06, 0.08), new THREE.MeshBasicMaterial({ color: 0xe5534b, side: THREE.DoubleSide }));
+  bar.position.set(0, 2.25, 0.01);
+  g.add(bar);
+  return { group: g, bar, barBg };
 }
 
-function makeHealthBar() {
-  const group = new THREE.Group();
-  const bg = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.14), new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.8, depthWrite: false }));
-  const fg = new THREE.Mesh(new THREE.PlaneGeometry(1.06, 0.1), new THREE.MeshBasicMaterial({ color: 0xff2e2e, depthWrite: false }));
-  fg.position.z = 0.01;
-  group.add(bg); group.add(fg);
-  group.userData.fg = fg;
-  return group;
+export function spawnGunmen(G, x, z, count, radius = 18) {
+  const rng = createRandom((Math.random() * 1e9) | 0);
+  const spawned = [];
+  for (let i = 0; i < count; i += 1) {
+    const a = rng() * Math.PI * 2;
+    const r = 4 + rng() * radius;
+    const gx = x + Math.cos(a) * r;
+    const gz = z + Math.sin(a) * r;
+    const { group, bar, barBg } = makeGunmanMesh();
+    group.position.set(gx, 0, gz);
+    G.scene.add(group);
+    const gunman = {
+      x: gx, z: gz, heading: 0, health: 60, maxHealth: 60,
+      state: 'hunt', shootTimer: 1 + rng() * 2, burst: 0, burstTimer: 0,
+      mesh: group, bar, barBg, dead: false, cover: null,
+    };
+    G.combat.gunmen.push(gunman);
+    spawned.push(gunman);
+  }
+  return spawned;
 }
 
-export function playerShoot(G) {
+function removeGunman(G, gunman) {
+  G.scene.remove(gunman.mesh);
+  const i = G.combat.gunmen.indexOf(gunman);
+  if (i >= 0) G.combat.gunmen.splice(i, 1);
+  // 30% drop a pickup.
+  if (Math.random() < 0.3) spawnPickup(G, gunman.x, gunman.z, Math.random() < 0.5 ? 'health' : 'ammo');
+  if (G.missions) G.missions.onGunmanDown(gunman);
+}
+
+export function spawnPickup(G, x, z, kind) {
+  const color = kind === 'health' ? 0x4ade80 : 0xf2c94c;
+  const mesh = new THREE.Mesh(PICKUP_GEO, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.35, roughness: 0.4 }));
+  mesh.position.set(x, 0.5, z);
+  G.scene.add(mesh);
+  G.combat.pickups.push({ x, z, kind, mesh, t: 0 });
+}
+
+/** Fire the player's current weapon from the camera centre. */
+export function fireWeapon(G) {
   const p = G.player;
   const combat = G.combat;
-  if (combat.fireTimer > 0 || p.inCar) return;
-  const w = WEAPONS[p.weapon];
-  if (p.weapon !== 'fists') {
-    if (p.ammo.mag <= 0) {
-      G.hud.banner('Out of ammo — press R to reload', '#ff6b4a');
-      G.audio.click();
-      combat.fireTimer = 0.3;
+  if (p.car) return;
+  const def = WEAPONS[p.weapon];
+  const now = G.time;
+  if (now - combat.lastShot < 1 / def.rate) return;
+  if (p.weapon !== 'fist') {
+    const ammo = p.ammo[p.weapon];
+    if (!ammo || ammo.mag <= 0) {
+      if (G.audio) G.audio.click();
       return;
     }
-    p.ammo.mag -= 1;
+    ammo.mag -= 1;
   }
-  combat.fireTimer = w.rate;
-  const cam = G.three.camera;
+  combat.lastShot = now;
+  const cam = G.camera;
+  const origin = new THREE.Vector3();
+  cam.getWorldPosition(origin);
   const dir = new THREE.Vector3();
   cam.getWorldDirection(dir);
-  const origin = cam.position.clone();
-  // Muzzle flash at the player's hands.
-  const muzzlePos = p.mesh.position.clone();
-  muzzlePos.y = 1.4;
-  muzzlePos.addScaledVector(new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading)), 0.6);
-  G.effects.muzzle(muzzlePos, dir);
-  G.audio.shot(p.weapon);
-  const pellets = w.pellets || 1;
-  let hitSomething = false;
+  const pellets = def.pellets ?? 1;
+  let hitAnything = false;
   for (let i = 0; i < pellets; i += 1) {
     const d = dir.clone();
-    d.x += (Math.random() - 0.5) * w.spread * 2;
-    d.y += (Math.random() - 0.5) * w.spread * 2;
-    d.z += (Math.random() - 0.5) * w.spread * 2;
+    d.x += (Math.random() - 0.5) * def.spread * 2;
+    d.y += (Math.random() - 0.5) * def.spread * 2;
+    d.z += (Math.random() - 0.5) * def.spread * 2;
     d.normalize();
-    const end = origin.clone().addScaledVector(d, w.range);
-    // Enemies first.
-    let best = null;
-    let bestT = w.range;
-    for (const e of combat.enemies) {
-      if (e.health <= 0) continue;
-      const to = new THREE.Vector3().subVectors(e.mesh.position.clone().setY(1.2), origin);
-      const t = to.dot(d);
-      if (t < 0 || t > bestT) continue;
-      const closest = origin.clone().addScaledVector(d, t);
-      if (closest.distanceTo(e.mesh.position.clone().setY(1.2)) < 1.1) { best = e; bestT = t; }
-    }
-    if (best) {
-      best.health -= w.damage;
-      best.bar.userData.fg.scale.x = Math.max(0.01, best.health / 100);
-      best.bar.userData.fg.position.x = -(1.06 - 1.06 * Math.max(0, best.health / 100)) / 2;
-      end.copy(origin).addScaledVector(d, bestT);
-      hitSomething = true;
-      if (best.health <= 0) {
-        best.mesh.rotation.x = -Math.PI / 2;
-        best.mesh.position.y = 0.3;
-        G.effects.burst(best.mesh.position, 0xff2e2e, 10, 3, 3);
-        G.hud.feed('Kings gunman down.');
-        G.missions.onKill(G);
+    const hit = raycastWorld(G, origin, d, def.range);
+    if (G.effects) G.effects.tracer(origin, hit.point, def.sound === 'shotgun' ? 0xffd23f : 0xfff2c0);
+    if (hit.target === 'gunman' && hit.gunman) {
+      hit.gunman.health -= def.damage;
+      if (G.effects) G.effects.hitSpark(hit.point.x, hit.point.y, hit.point.z);
+      if (G.hud) G.hud.hitmarker();
+      hitAnything = true;
+      if (hit.gunman.health <= 0 && !hit.gunman.dead) {
+        hit.gunman.dead = true;
+        hit.gunman.mesh.rotation.x = -Math.PI / 2;
+        hit.gunman.mesh.position.y = 0.4;
+        hit.gunman.bar.visible = false;
+        hit.gunman.barBg.visible = false;
+        if (G.audio) G.audio.down();
+        removeGunman(G, hit.gunman);
       }
-    }
-    // Pedestrians can be hit too — they fall and the cops notice.
-    for (const ped of G.pedestrians.list) {
-      if (ped.downTimer > 0) continue;
-      const to = new THREE.Vector3().subVectors(ped.mesh.position.clone().setY(1.1), origin);
-      const t = to.dot(d);
-      if (t < 0 || t > bestT) continue;
-      const closest = origin.clone().addScaledVector(d, t);
-      if (closest.distanceTo(ped.mesh.position.clone().setY(1.1)) < 0.9) {
-        knockPed(G, ped);
-        hitSomething = true;
-      }
-    }
-    tracerLine(G, muzzlePos, end);
-  }
-  if (hitSomething) G.hud.hitmarker();
-  // Shooting in public draws heat.
-  G.police.addHeat(0.4);
-  G.pedestrians.fleeFrom(G, p.mesh.position, 26);
-}
-
-export function playerPunch(G) {
-  const p = G.player;
-  if (p.punchTimer > 0 || p.inCar) return;
-  p.punchTimer = 0.45;
-  G.audio.punch();
-  const forward = new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading));
-  const fist = p.mesh.position.clone().addScaledVector(forward, 1.2);
-  fist.y = 1.3;
-  for (const e of G.combat.enemies) {
-    if (e.health <= 0) continue;
-    if (e.mesh.position.distanceTo(fist) < 1.6) {
-      e.health -= WEAPONS.fists.damage;
-      G.hud.hitmarker();
-      if (e.health <= 0) {
-        e.mesh.rotation.x = -Math.PI / 2;
-        G.missions.onKill(G);
-      }
+    } else if (hit.target === 'ped') {
+      hit.ped.state = 'down';
+      hit.ped.stateT = 0;
+      addHeat(G, 1);
+      scarePeds(G, hit.ped.x, hit.ped.z, 16);
+    } else if (hit.target === 'world') {
+      if (G.effects) G.effects.hitSpark(hit.point.x, hit.point.y, hit.point.z);
     }
   }
-  for (const ped of G.pedestrians.list) {
-    if (ped.downTimer > 0) continue;
-    if (ped.mesh.position.distanceTo(fist) < 1.4) knockPed(G, ped);
+  if (G.effects) G.effects.muzzle(origin.clone().add(dir.clone().multiplyScalar(1.2)));
+  if (G.audio) G.audio.shot(def.sound);
+  if (G.camera) G.cameraShake = Math.min(0.3, (G.cameraShake ?? 0) + (def.sound === 'shotgun' ? 0.22 : 0.08));
+  if (!hitAnything) addHeat(G, 0.15); // Firing a gun in the city draws attention.
+}
+
+function raycastWorld(G, origin, dir, range) {
+  // Nearest gunman / ped sphere hit, else nearest building AABB, else max range.
+  let best = { target: 'none', point: origin.clone().add(dir.clone().multiplyScalar(range)), t: range };
+  const targets = [];
+  for (const g of G.combat.gunmen) targets.push({ kind: 'gunman', obj: g, x: g.x, y: 1.2, z: g.z, r: 0.9 });
+  for (const ped of G.peds) {
+    if (ped.state === 'down') continue;
+    targets.push({ kind: 'ped', obj: ped, x: ped.x, y: 1.1, z: ped.z, r: 0.7 });
   }
+  for (const t of targets) {
+    const ox = t.x - origin.x;
+    const oy = t.y - origin.y;
+    const oz = t.z - origin.z;
+    const proj = ox * dir.x + oy * dir.y + oz * dir.z;
+    if (proj < 0 || proj > best.t) continue;
+    const cx = origin.x + dir.x * proj;
+    const cy = origin.y + dir.y * proj;
+    const cz = origin.z + dir.z * proj;
+    const d2 = (t.x - cx) ** 2 + (t.y - cy) ** 2 + (t.z - cz) ** 2;
+    if (d2 < t.r * t.r) {
+      best = { target: t.kind, point: new THREE.Vector3(cx, cy, cz), t: proj, gunman: t.kind === 'gunman' ? t.obj : null, ped: t.kind === 'ped' ? t.obj : null };
+    }
+  }
+  // Buildings: ray vs AABB slab test, ground plane y=0.
+  for (const c of G.city.colliders) {
+    const t = rayAABB(origin, dir, c.x0, 0, c.z0, c.x1, 14, c.z1);
+    if (t !== null && t < best.t && t > 0) {
+      best = { target: 'world', point: origin.clone().add(dir.clone().multiplyScalar(t)), t };
+    }
+  }
+  if (dir.y < -0.001) {
+    const t = -origin.y / dir.y;
+    if (t > 0 && t < best.t) best = { target: 'world', point: origin.clone().add(dir.clone().multiplyScalar(t)), t };
+  }
+  return best;
 }
 
-export function reloadWeapon(G) {
-  const p = G.player;
-  const w = WEAPONS[p.weapon];
-  if (p.weapon === 'fists' || p.ammo.mag === w.mag || p.ammo.reserve <= 0) return;
-  const need = w.mag - p.ammo.mag;
-  const take = Math.min(need, p.ammo.reserve);
-  p.ammo.mag += take;
-  p.ammo.reserve -= take;
-  G.audio.click();
-  G.hud.banner(`Reloaded ${w.name}.`, '#f4f0e6');
+function rayAABB(o, d, x0, y0, z0, x1, y1, z1) {
+  let tmin = 0;
+  let tmax = 1e9;
+  const axes = [['x', x0, x1], ['y', y0, y1], ['z', z0, z1]];
+  for (const [axis, lo, hi] of axes) {
+    const od = o[axis];
+    const dd = d[axis];
+    if (Math.abs(dd) < 1e-9) {
+      if (od < lo || od > hi) return null;
+    } else {
+      let t1 = (lo - od) / dd;
+      let t2 = (hi - od) / dd;
+      if (t1 > t2) [t1, t2] = [t2, t1];
+      tmin = Math.max(tmin, t1);
+      tmax = Math.min(tmax, t2);
+      if (tmin > tmax) return null;
+    }
+  }
+  return tmin;
 }
 
-export function stepCombat(G, dt) {
+export function updateCombat(G, dt) {
   const combat = G.combat;
-  if (combat.fireTimer > 0) combat.fireTimer -= dt;
   const p = G.player;
-  for (const e of combat.enemies) {
-    if (e.health <= 0) continue;
-    const toPlayer = new THREE.Vector3().subVectors(p.mesh.position, e.mesh.position);
-    toPlayer.y = 0;
-    const dist = toPlayer.length();
-    e.mesh.lookAt(p.mesh.position.x, 0, p.mesh.position.z);
-    e.bar.lookAt(G.three.camera.position);
-    if (dist > 26) {
-      // Close the distance.
-      toPlayer.normalize();
-      e.mesh.position.addScaledVector(toPlayer, 3.2 * dt);
-    } else if (dist > 6) {
-      // Strafe a little, shoot in bursts.
-      e.shootTimer -= dt;
-      if (e.shootTimer <= 0) {
-        e.burst = 3;
-        e.shootTimer = 1.6 + Math.random() * 1.4;
+  // Auto-fire while the mouse is held (SMG) — semi-auto weapons fire once per click.
+  const def = WEAPONS[p.weapon];
+  const edge = G.input.takeFiringEdge();
+  if ((def.auto && G.input.firing) || (!def.auto && edge)) {
+    if (!p.car) fireWeapon(G);
+  }
+  // Gunmen AI.
+  for (const g of [...combat.gunmen]) {
+    if (g.dead) continue;
+    const dx = p.x - g.x;
+    const dz = p.z - g.z;
+    const dist = Math.hypot(dx, dz);
+    g.shootTimer -= dt;
+    if (dist > 22) {
+      // Advance toward the player.
+      g.heading = Math.atan2(dx, dz);
+      g.x += Math.sin(g.heading) * 3.4 * dt;
+      g.z += Math.cos(g.heading) * 3.4 * dt;
+    } else if (dist < 9) {
+      // Back off a little, keep distance.
+      g.heading = Math.atan2(dx, dz);
+      g.x -= Math.sin(g.heading) * 2 * dt;
+      g.z -= Math.cos(g.heading) * 2 * dt;
+    }
+    g.mesh.position.set(g.x, 0, g.z);
+    g.mesh.rotation.y = Math.atan2(dx, dz);
+    const healthFrac = Math.max(0, g.health / g.maxHealth);
+    g.bar.scale.x = healthFrac;
+    g.bar.position.x = -(1.06 * (1 - healthFrac)) / 2;
+    // Shoot in bursts when the player is in range and on foot.
+    if (dist < 34 && !p.car && g.shootTimer <= 0) {
+      g.burst = 3;
+      g.burstTimer = 0;
+      g.shootTimer = 1.6 + Math.random() * 1.4;
+    }
+    if (g.burst > 0) {
+      g.burstTimer -= dt;
+      if (g.burstTimer <= 0) {
+        g.burst -= 1;
+        g.burstTimer = 0.16;
+        // Aim error grows with distance; the player can dodge by moving.
+        const err = 0.05 + dist * 0.004;
+        const hitChance = Math.max(0.12, 0.55 - dist * 0.012);
+        if (Math.random() < hitChance) {
+          damagePlayer(G, 6 + Math.random() * 5);
+        }
+        const from = new THREE.Vector3(g.x, 1.4, g.z);
+        const to = new THREE.Vector3(p.x + (Math.random() - 0.5) * err * 20, 1.2, p.z + (Math.random() - 0.5) * err * 20);
+        if (G.effects) G.effects.tracer(from, to, 0xff8866);
+        if (G.audio) G.audio.shot('pistol', 0.4);
       }
-      if (e.burst > 0) {
-        e.burst -= dt * 6;
-        if (Math.random() < dt * 6) {
-          G.audio.shot('pistol');
-          const from = e.mesh.position.clone().setY(1.4);
-          const to = p.mesh.position.clone().setY(1.2);
-          to.x += (Math.random() - 0.5) * 2.4;
-          to.z += (Math.random() - 0.5) * 2.4;
-          tracerLine(G, from, to);
-          // 1 in 4 bursts lands a hit.
-          if (Math.random() < 0.25) damagePlayer(G, 9);
+    }
+  }
+  // Pickups: bob, spin, collect on touch.
+  for (const pk of [...combat.pickups]) {
+    pk.t += dt;
+    pk.mesh.position.y = 0.5 + Math.sin(pk.t * 3) * 0.12;
+    pk.mesh.rotation.y += dt * 2;
+    const d = Math.hypot(pk.x - p.x, pk.z - p.z);
+    if (d < 1.6 && !p.car) {
+      if (pk.kind === 'health') p.health = Math.min(100, p.health + 40);
+      else {
+        for (const w of ['pistol', 'smg', 'shotgun']) {
+          if (p.ammo[w]) p.ammo[w].reserve += 24;
         }
       }
-    }
-  }
-}
-
-// Health / ammo pickups dropped in the world.
-export function spawnPickup(G, x, z, kind) {
-  const color = kind === 'health' ? 0x3ad86b : 0xf2c94c;
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(0.6, 0.6, 0.6),
-    new THREE.MeshLambertMaterial({ color, emissive: color, emissiveIntensity: 0.4 }),
-  );
-  mesh.position.set(x, 0.8, z);
-  mesh.rotation.y = Math.PI / 4;
-  G.scene.add(mesh);
-  const pickup = { mesh, kind, bob: Math.random() * Math.PI * 2 };
-  G.pickups.push(pickup);
-  return pickup;
-}
-
-export function stepPickups(G, dt) {
-  const p = G.player;
-  for (const pk of [...G.pickups]) {
-    pk.bob += dt * 3;
-    pk.mesh.position.y = 0.8 + Math.sin(pk.bob) * 0.15;
-    pk.mesh.rotation.y += dt * 1.5;
-    const d = Math.hypot(pk.mesh.position.x - p.mesh.position.x, pk.mesh.position.z - p.mesh.position.z);
-    if (d < 1.6 && !p.inCar) {
-      if (pk.kind === 'health') p.health = Math.min(100, p.health + 40);
-      else p.ammo.reserve += 48;
+      if (G.hud) G.hud.toast(pk.kind === 'health' ? '+40 health' : '+24 ammo (all weapons)');
+      if (G.audio) G.audio.chime();
       G.scene.remove(pk.mesh);
-      G.pickups.splice(G.pickups.indexOf(pk), 1);
-      G.audio.pickup();
-      G.hud.feed(pk.kind === 'health' ? 'Picked up health.' : 'Picked up ammo.');
+      combat.pickups.splice(combat.pickups.indexOf(pk), 1);
+    }
+  }
+  // Tracer fade.
+  for (const tr of [...combat.tracers]) {
+    tr.life -= dt;
+    if (tr.life <= 0) {
+      G.scene.remove(tr.line);
+      combat.tracers.splice(combat.tracers.indexOf(tr), 1);
+    } else {
+      tr.line.material.opacity = tr.life / 0.12;
     }
   }
 }
-
-export { clamp };

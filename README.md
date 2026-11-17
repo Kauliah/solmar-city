@@ -1,36 +1,27 @@
-# solmar-city
+# Solmar City
 
 [![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![rank](https://make.fun/badge/gta6-01/Kauliah/solmar-city/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/Kauliah/solmar-city/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-**Solmar City** is a sun-soaked open-world crime game built with three.js. You are **Juno Reyes**, a former courier driver who owes a debt to fixer **Iris Delgado** — work it off across 8 story missions against the rival **Harbor Kings**, in a coastal city you can explore on foot and by car.
+**Solmar City** is a sun-soaked open-world crime game built with three.js for make.fun's "Make GTA 6" bounty. You are **Juno Reyes**, a former courier driver who owes a debt to fixer **Iris Delgado** — work it off across 8 story missions against the rival **Harbor Kings**, or just take the city for yourself.
+
+## The city
+
+Solmar is a 600 × 600 m coastal city with five districts: **Marina Bay** (yachts and boardwalk), **Old Town** (pastel blocks and a plaza), **Harbor Docks** (warehouses, containers, cranes), **Downtown** (glass towers around Plaza del Sol), and **North Hills** (villas and a lookout over the bay). A beach strip and pier run along the south edge; the Solmar Tower, the Old Lighthouse and Estadio del Sol mark the skyline.
 
 ## What you can do
 
-- **Explore Solmar** — five districts (Marina Bay, Old Town, Harbor Docks, Downtown, North Hills), a beach, a pier, a lighthouse and the Solmar Tower, all in warm late-afternoon light.
-- **Drive and steal** — seven invented car models (Alba, Meridian, Vela GT, Hauler, Dune Runner, Solmar Taxi, police Interceptor). Walk up to any car and press **E** to take it; locked cars need a 2-second hotwire.
-- **Outrun the law** — a 1–5 star wanted system. Police Interceptors chase, ram and box you in; a helicopter joins at 3 stars. Hide out of sight to cool down, or pay $150 at the Tune-Up Garage to clear your name and fix your car.
-- **8 story missions** — from "First Fare" (a simple drive to Iris's cafe) to the finale "Vale's Fall" at the Solmar Tower garage, with taxi fares, a harbor heist, a Pier 9 shootout and a timed ring-road race in between.
-- **Combat** — fists, the P-9 Sparrow pistol, the Hornet-9 SMG and the Boomstick shotgun (buy weapons at Harbor Hardware), against Harbor Kings gunmen who take cover and shoot back.
-- **Side jobs** — 20 hidden packages ($50 each, $500 bonus for all), taxi fares, and street races on the ring road. Cash, cars, weapons, missions and best times save in your browser.
-- **Feel** — chase-cam with speed FOV kick, skid marks and tyre smoke, screen shake, a live minimap, damage vignette, and fully procedural WebAudio (engine hum, sirens, gunshots, gulls by the beach).
-
-## Controls
-
-| Key | Action |
-| --- | --- |
-| WASD / arrows | Move / drive |
-| Mouse | Look (click to lock) |
-| Shift | Sprint / boost |
-| Space | Jump / handbrake |
-| E | Enter, steal or hotwire a car; use shops and start missions |
-| F | Punch |
-| Click | Shoot |
-| R | Reload |
-| 1–4 | Fists / pistol / SMG / shotgun |
-| P / Esc | Pause |
-| M | Mute |
+- **On foot and by car** — third-person walking with sprint, jump and crouch; arcade driving with handbrake drifts, boost and speed FOV kick.
+- **Steal any car** — walk up and press E. Parked cars, traffic cars, even the Vela GT at the Marina. Locked cars take 2 seconds to hotwire.
+- **Traffic and pedestrians** — 14 cars keep their lanes and honk when stuck; 24 walkers stroll the sidewalks and flee when shots ring out.
+- **Wanted level 1–5** — steal, crash and shoot and the Solmar police respond: patrol cars, roadblocks, a helicopter spotlight at 3 stars. Hide to cool down, or pay $150 at the **Tune-Up Garage** to clear the heat.
+- **8 story missions** — a first fare, a stolen sports car, taxi trouble, a package run through Downtown, a harbor heist, a shootout at Pier 9, a ring-road race against the clock, and the finale against Cassian Vale in the Solmar Tower garage.
+- **Side jobs** — taxi fares, 20 hidden packages ($50 each, $500 for all), and 3 checkpoint street races with best times saved.
+- **Combat** — fists, the P-9 Sparrow pistol, the Hornet-9 SMG and the Boomstick shotgun (buy them at **Harbor Hardware**), against Harbor Kings gunmen who take cover and shoot in bursts.
+- **Progression** — cash buys cars at **Marina Motors** and weapons at Harbor Hardware; progress saves to the browser (cash, cars, weapons, missions, packages, race bests).
+- **HUD + minimap** — wanted stars, cash and clock, health and armour, speed and car name, mission objective with distance, and a live minimap with police, markers and shops.
+- **Procedural audio** — engine hum, sirens, gunshots, skids, stings and gulls, all synthesized in WebAudio. No external files anywhere.
 
 ## Run it
 
@@ -38,11 +29,30 @@
 node serve.ts
 ```
 
-Then open http://localhost:8080. No build step, no network — the game runs entirely from `game/` (three.js is vendored under `game/vendor/three/`).
+Then open http://localhost:8080.
 
-## How it is built
+## Controls
 
-One job per file under `game/src/`: `city.js` builds Solmar, `vehicles.js` drives and steals cars, `traffic.js` and `pedestrians.js` keep the streets alive, `police.js` runs the wanted system, `missions.js` tells the story, `combat.js` handles weapons and gunmen, `hud.js` draws the HUD and minimap, `camera.js` / `effects.js` / `audio.js` handle feel, and `save.js` persists progress. `main.ts` copies `game/` and `screenshots/` to the output and writes the judge dossier with the vendored make.fun library.
+| Key | Action |
+| --- | --- |
+| WASD / arrows | Move / drive |
+| Shift | Sprint / boost |
+| Space | Jump / handbrake |
+| Mouse drag | Look around |
+| E | Enter / steal a car |
+| Click | Shoot |
+| F | Punch |
+| R | Reload |
+| 1–4 | Switch weapon |
+| C | Crouch |
+| P / Esc | Pause |
+| M | Mute |
+
+## Tech
+
+- three.js 0.187.0, vendored under `game/vendor/three/` (no network at runtime).
+- Fixed-step 60 Hz simulation, seeded RNG for deterministic screenshot scenes.
+- Source split by job: `city`, `vehicles`, `traffic`, `pedestrians`, `police`, `player`, `combat`, `missions`, `hud`, `camera`, `effects`, `audio`, `save`.
 
 ---
 

@@ -1,160 +1,210 @@
-// Wanted stars + police. Heat rises with crime; police Interceptors chase, ram and
-// box the player in; hiding out of sight clears a star. Busted / wasted respawn
-// the player at the hospital and cost cash.
+// Wanted level + police. Stars 1–5: patrol cars chase, ram and box in; at 3+ a
+// helicopter spotlights the player; at 2+ roadblocks appear. Hide out of sight
+// to cool down, or pay $150 at the Tune-Up Garage to clear the heat instantly.
 import * as THREE from 'three';
-import { WANTED } from './config.js';
-import { clamp } from './random.js';
-import { spawnCar, removeCar } from './vehicles.js';
-import { angleLerp } from './random.js';
+import { POIS, GARAGE_PRICE, BUSTED_FINE, WASTED_LOSS, WANTED_DECAY_SECONDS } from './config.js';
+import { createVehicle } from './vehicles.js';
+import { createRandom } from './random.js';
 
 export function createPolice(G) {
+  const heliGroup = new THREE.Group();
+  const heliBody = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.4, 6), new THREE.MeshStandardMaterial({ color: 0x2a3040, roughness: 0.5 }));
+  heliGroup.add(heliBody);
+  const rotor = new THREE.Mesh(new THREE.BoxGeometry(9, 0.12, 0.7), new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.6 }));
+  rotor.position.y = 1;
+  heliGroup.add(rotor);
+  const spot = new THREE.Mesh(
+    new THREE.ConeGeometry(9, 46, 20, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xfff2c0, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  spot.position.y = -24;
+  spot.rotation.x = Math.PI;
+  heliGroup.add(spot);
+  const spotRing = new THREE.Mesh(
+    new THREE.CircleGeometry(9, 24),
+    new THREE.MeshBasicMaterial({ color: 0xfff2c0, transparent: true, opacity: 0.22, depthWrite: false }),
+  );
+  spotRing.rotation.x = -Math.PI / 2;
+  spotRing.position.y = -46;
+  heliGroup.add(spotRing);
+  heliGroup.visible = false;
+  G.scene.add(heliGroup);
   return {
-    stars: 0,
-    heat: 0,
-    hideTimer: 0,
+    wanted: 0,
+    heat: 0, // 0..5 fractional; wanted = ceil(heat)
+    decayTimer: 0,
     cars: [],
-    heli: null,
+    heli: heliGroup,
+    heliRotor: rotor,
+    spotRing,
     bustedTimer: 0,
-    addHeat(amount) {
-      this.heat = Math.min(5, this.heat + amount);
-      const next = Math.min(5, Math.floor(this.heat) + (this.heat % 1 > 0.6 ? 0 : 0));
-      this.stars = Math.max(this.stars, Math.min(5, Math.ceil(this.heat)));
-      if (this.stars > 0) this.hideTimer = 0;
-      G.hud.setStars(this.stars);
-      if (this.stars > G.save.bestWanted) {
-        G.save.bestWanted = this.stars;
-      }
-    },
-    clearStars() {
-      this.stars = 0;
-      this.heat = 0;
-      this.hideTimer = 0;
-      for (const c of [...this.cars]) this.despawn(c);
-      G.hud.setStars(0);
-      G.hud.banner('You lost the cops.', '#17a398');
-    },
-    spawn(count) {
-      const p = G.player;
-      const base = p.inCar ? p.inCar.mesh.position : p.mesh.position;
-      for (let i = 0; i < count; i += 1) {
-        const a = (i / Math.max(1, count)) * Math.PI * 2 + Math.random();
-        const x = clamp(base.x + Math.sin(a) * 70, -280, 280);
-        const z = clamp(base.z + Math.cos(a) * 70, -280, 280);
-        const car = spawnCar(G, 'interceptor', x, z, 0, { driver: 'police' });
-        this.cars.push(car);
-      }
-    },
-    despawn(car) {
-      this.cars = this.cars.filter((c) => c !== car);
-      removeCar(G, car);
-    },
-    wasted(G2) {
-      const p = G2.player;
-      const lost = Math.floor(p.cash * 0.1);
-      p.cash -= lost;
-      G2.save.cash = p.cash;
-      G2.hud.showEnd('WASTED', `You lost $${lost}. The crew picked you up at the hospital.`);
-      G2.audio.fail();
-      G2.screen = 'over';
-    },
-    busted(G2) {
-      const p = G2.player;
-      const lost = Math.floor(p.cash * 0.15);
-      p.cash -= lost;
-      G2.save.cash = p.cash;
-      G2.hud.showEnd('BUSTED', `The cops took $${lost}. Iris bailed you out.`);
-      G2.audio.fail();
-      G2.screen = 'over';
-    },
+    roadblockAt: null,
   };
 }
 
-export function stepPolice(G, dt) {
-  const pol = G.police;
-  const p = G.player;
-  if (pol.stars === 0) return;
-  const playerPos = p.inCar ? p.inCar.mesh.position : p.mesh.position;
-  const playerSpeed = p.inCar ? Math.abs(p.inCar.speed) : 0;
-  // Keep the right number of pursuit cars on the road.
-  const want = WANTED.maxPolice[pol.stars];
-  if (pol.cars.length < want) pol.spawn(want - pol.cars.length);
-  // Hide timer: wanted decays when the player is slow and far from every cop.
-  let nearest = Infinity;
-  for (const c of pol.cars) {
-    nearest = Math.min(nearest, Math.hypot(c.mesh.position.x - playerPos.x, c.mesh.position.z - playerPos.z));
+export function addHeat(G, amount) {
+  const p = G.police;
+  p.heat = Math.min(5, p.heat + amount);
+  p.wanted = Math.ceil(p.heat);
+  p.decayTimer = 0;
+  if (G.hud) G.hud.flashWanted();
+}
+
+function spawnCop(G, nearX, nearZ) {
+  const rng = createRandom((Math.random() * 1e9) | 0);
+  const angle = rng() * Math.PI * 2;
+  const x = Math.max(-280, Math.min(280, nearX + Math.cos(angle) * 60));
+  const z = Math.max(-280, Math.min(280, nearZ + Math.sin(angle) * 60));
+  const car = createVehicle(G.scene, 'interceptor', 0x1a2a44, x, z, 0, { kind: 'police', id: `cop-${G.time.toFixed(0)}-${G.police.cars.length}` });
+  car.cruise = 30;
+  G.police.cars.push(car);
+  if (G.audio) G.audio.siren(true);
+  return car;
+}
+
+function removeCop(G, car) {
+  G.scene.remove(car.mesh);
+  const i = G.police.cars.indexOf(car);
+  if (i >= 0) G.police.cars.splice(i, 1);
+  if (G.police.cars.length === 0 && G.audio) G.audio.siren(false);
+}
+
+/** Wanted target count of pursuit cars by stars. */
+function wantedCars(stars) {
+  return [0, 1, 2, 3, 4, 5][stars] ?? 0;
+}
+
+export function updatePolice(G, dt) {
+  const p = G.police;
+  const player = G.player;
+  const px = player.car ? player.car.x : player.x;
+  const pz = player.car ? player.car.z : player.z;
+  const pSpeed = player.car ? Math.abs(player.car.speed) : 0;
+
+  // Decay: out of sight of any cop for 20 s drops one star.
+  let seen = false;
+  for (const cop of p.cars) {
+    if (Math.hypot(cop.x - px, cop.z - pz) < 55) { seen = true; break; }
   }
-  const hidden = nearest > 60 && playerSpeed < 4;
-  if (hidden) {
-    pol.hideTimer += dt;
-    if (pol.hideTimer > WANTED.decaySeconds) {
-      pol.stars -= 1;
-      pol.heat = Math.max(0, pol.heat - 1);
-      pol.hideTimer = 0;
-      G.hud.setStars(pol.stars);
-      if (pol.stars === 0) pol.clearStars();
-      else G.hud.banner(`Wanted level down — ${pol.stars} star${pol.stars === 1 ? '' : 's'} left.`, '#17a398');
+  if (p.wanted > 0 && !seen) {
+    p.decayTimer += dt;
+    if (p.decayTimer >= WANTED_DECAY_SECONDS) {
+      p.heat = Math.max(0, p.heat - 1);
+      p.wanted = Math.ceil(p.heat);
+      p.decayTimer = 0;
     }
   } else {
-    pol.hideTimer = 0;
+    p.decayTimer = 0;
   }
-  // Helicopter spotlight at 3+ stars: a circling light, visual only.
-  if (pol.stars >= 3 && !pol.heli) {
-    const heli = new THREE.Mesh(
-      new THREE.ConeGeometry(6, 2, 6),
-      new THREE.MeshBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.25, depthWrite: false }),
-    );
-    heli.rotation.x = Math.PI;
-    G.scene.add(heli);
-    pol.heli = heli;
-  } else if (pol.stars < 3 && pol.heli) {
-    G.scene.remove(pol.heli);
-    pol.heli = null;
+
+  // Match pursuit count to stars.
+  const want = wantedCars(p.wanted);
+  while (p.cars.length < want) spawnCop(G, px, pz);
+  while (p.cars.length > want) removeCop(G, p.cars[p.cars.length - 1]);
+
+  // Helicopter at 3+ stars: hover above the player, spotlight ring on the ground.
+  const heliOn = p.wanted >= 3;
+  p.heli.visible = heliOn;
+  if (heliOn) {
+    p.heli.position.set(px + 8, 48, pz - 6);
+    p.heliRotor.rotation.y += dt * 22;
+    // The ring hangs under the helicopter (local 0,-46,0); the group carries
+    // it, so it never needs a world position — setting one here put the ring
+    // in the sky, twice as far from the player as the helicopter itself.
+    p.spotRing.material.opacity = 0.16 + Math.sin(G.time * 6) * 0.06;
   }
-  if (pol.heli) {
-    const t = G.time * 0.5;
-    pol.heli.position.set(playerPos.x + Math.sin(t) * 18, 42, playerPos.z + Math.cos(t) * 18);
-  }
-  // Pursuit: steer at the player's predicted position, ram when close.
-  for (const car of [...pol.cars]) {
-    const dx = playerPos.x - car.mesh.position.x;
-    const dz = playerPos.z - car.mesh.position.z;
+
+  // Pursuit steering: chase the player's position with a little prediction,
+  // ram when close, back off and re-approach when boxed in.
+  for (const cop of p.cars) {
+    const ahead = pSpeed * 0.7;
+    const tx = px + Math.sin(player.heading ?? 0) * ahead;
+    const tz = pz + Math.cos(player.heading ?? 0) * ahead;
+    const dx = tx - cop.x;
+    const dz = tz - cop.z;
     const dist = Math.hypot(dx, dz);
-    const px = playerPos.x + (p.inCar ? Math.sin(p.inCar.heading) * p.inCar.speed * 0.5 : 0);
-    const pz = playerPos.z + (p.inCar ? Math.cos(p.inCar.heading) * p.inCar.speed * 0.5 : 0);
-    const wantHeading = Math.atan2(px - car.mesh.position.x, pz - car.mesh.position.z);
-    let dh = wantHeading - car.heading;
+    const wantHeading = Math.atan2(dx, dz);
+    let dh = wantHeading - cop.heading;
     while (dh > Math.PI) dh -= Math.PI * 2;
     while (dh < -Math.PI) dh += Math.PI * 2;
-    car.heading += Math.max(-2.2 * dt, Math.min(2.2 * dt, dh));
-    const targetSpeed = dist < 6 ? car.def.topSpeed * 1.05 : car.def.topSpeed * (0.85 + pol.stars * 0.03);
-    car.speed += (targetSpeed - car.speed) * Math.min(1, dt * 1.2);
-    car.mesh.position.x += Math.sin(car.heading) * car.speed * dt;
-    car.mesh.position.z += Math.cos(car.heading) * car.speed * dt;
-    car.mesh.rotation.y = car.heading;
-    const spin = car.speed * dt * 2.4;
-    for (const w of car.wheels) w.rotation.x += spin;
-    // Flashing light bar.
-    const flash = Math.floor(G.time * 6) % 2 === 0;
-    if (!car.lightBar) {
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.22, 0.5), new THREE.MeshBasicMaterial({ color: 0xff2e2e }));
-      bar.position.set(0, car.def.height * 1.25, 0);
-      car.mesh.add(bar);
-      car.lightBar = bar;
+    const aggression = 0.8 + p.wanted * 0.25;
+    cop.heading += Math.max(-2.4 * dt, Math.min(2.4 * dt, dh * 3.2 * dt));
+    const targetSpeed = dist > 26 ? 34 + p.wanted * 1.5 : 26 + p.wanted;
+    cop.speed = Math.min(targetSpeed, cop.speed + 18 * dt * aggression);
+    cop.x += Math.sin(cop.heading) * cop.speed * dt;
+    cop.z += Math.cos(cop.heading) * cop.speed * dt;
+    cop.mesh.position.set(cop.x, 0, cop.z);
+    cop.mesh.rotation.y = cop.heading;
+    const spin = (cop.speed * dt) / 0.36;
+    for (const w of cop.wheels) w.rotation.x += spin;
+    // Ram the player car: shove + damage + shake.
+    if (player.car && dist < 3.6) {
+      player.car.speed *= 0.92;
+      player.car.health -= 6 * dt * 10;
+      if (G.effects) G.effects.shake(0.35);
+      if (G.audio) G.audio.thud();
+      cop.speed *= 0.8;
     }
-    car.lightBar.material.color.setHex(flash ? 0xff2e2e : 0x2e6bff);
-    if (Math.random() < dt * 0.5) G.audio.siren(dt);
-    // Ram the player's car.
-    if (p.inCar && dist < 4.5) {
-      p.inCar.health -= 8 * dt;
-      G.camera.shake = Math.min(1, G.camera.shake + 0.2);
-      if (Math.random() < dt * 2) G.audio.impact();
+    // Busted: on foot, slow, a cop within 3 m for 2 s.
+    if (!player.car && dist < 3.2 && pSpeed < 1 && player.health > 0) {
+      p.bustedTimer += dt;
+      if (p.bustedTimer > 2) {
+        G.busted = true;
+        return;
+      }
+    } else {
+      p.bustedTimer = Math.max(0, p.bustedTimer - dt * 2);
     }
-    // Busted: on foot, slow, cop right on top of you.
-    if (!p.inCar && dist < 2.2 && playerSpeed < 1) {
-      pol.busted(G);
-      return;
-    }
-    // Despawn far pursuit cars so the chase stays close.
-    if (dist > 240) pol.despawn(car);
+    if (dist > 380) removeCop(G, cop);
   }
+
+  // Tune-Up Garage: drive in with a car, $150 clears wanted and repairs.
+  if (player.car) {
+    const gd = Math.hypot(player.car.x - POIS.garage.x, player.car.z - POIS.garage.z);
+    if (gd < 9 && p.wanted > 0 && player.cash >= GARAGE_PRICE) {
+      player.cash -= GARAGE_PRICE;
+      p.heat = 0;
+      p.wanted = 0;
+      player.car.health = player.car.def.durability;
+      player.car.color = [0xff6b4a, 0x17a398, 0xf2c94c, 0x5a98b8][Math.floor(Math.random() * 4)];
+      if (G.hud) G.hud.toast('Tune-Up Garage — wanted cleared, car repaired. -$150');
+      if (G.audio) G.audio.chime();
+    }
+  }
+}
+
+/** Player caught: lose cash, respawn at the hospital, heat cleared. */
+export function applyBusted(G) {
+  const player = G.player;
+  player.cash = Math.max(0, player.cash - BUSTED_FINE);
+  player.health = 100;
+  player.armour = 0;
+  player.x = POIS.hospital.x;
+  player.z = POIS.hospital.z;
+  player.heading = 0;
+  if (player.car) {
+    player.car.kind = 'parked';
+    player.car = null;
+  }
+  G.police.heat = 0;
+  G.police.wanted = 0;
+  G.busted = false;
+}
+
+/** Player wasted: lose 10% cash, respawn at the hospital, keep missions. */
+export function applyWasted(G) {
+  const player = G.player;
+  player.cash = Math.floor(player.cash * (1 - WASTED_LOSS));
+  player.health = 100;
+  player.armour = 0;
+  player.x = POIS.hospital.x;
+  player.z = POIS.hospital.z;
+  player.heading = 0;
+  if (player.car) {
+    player.car.kind = 'parked';
+    player.car = null;
+  }
+  G.police.heat = Math.max(0, G.police.heat - 1);
+  G.police.wanted = Math.ceil(G.police.heat);
+  G.wasted = false;
 }
