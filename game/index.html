@@ -3,17 +3,145 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
+<title>Solmar City — open-world crime game</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f2a;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text, #f4efe6); }
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .panel { background: var(--panel, rgba(20,24,34,.72)); border-radius: 10px; padding: 8px 12px;
+    backdrop-filter: blur(2px); box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+  #hud { position: fixed; inset: 0; pointer-events: none; display: none; }
+  #hud.on { display: block; }
+  #wanted { position: absolute; top: 14px; left: 16px; font-size: 26px; letter-spacing: 4px;
+    color: #f2c94c; text-shadow: 0 2px 6px rgba(0,0,0,.7); }
+  #wanted.hot { color: #ff4a2a; animation: pulse .5s infinite alternate; }
+  @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.12); } }
+  #cash { position: absolute; top: 14px; right: 16px; font-size: 22px; font-weight: 700; color: #3dd9a0; }
+  #clock { position: absolute; top: 46px; right: 16px; font-size: 15px; color: var(--muted, #c9bfae); }
+  #objective { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    font-size: 16px; font-weight: 600; text-align: center; max-width: 46%;
+    text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+  #banner { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
+    font-size: 24px; font-weight: 800; text-align: center; opacity: 0; transition: opacity .3s;
+    text-shadow: 0 2px 10px rgba(0,0,0,.9); color: #ffd9a0; max-width: 80%; }
+  #banner.show { opacity: 1; }
+  #stats { position: absolute; left: 16px; bottom: 16px; width: 210px; }
+  #health-bar, #armour-bar { height: 12px; background: rgba(0,0,0,.5); border-radius: 6px; overflow: hidden; margin: 4px 0; }
+  #health-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #3dd9a0, #17a398); }
+  #armour-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #7fb5d9, #3d7fd9); }
+  #health-text { font-size: 13px; color: var(--muted, #c9bfae); }
+  #minimap { width: 170px; height: 170px; border-radius: 50%; border: 3px solid rgba(244,239,230,.8);
+    margin-bottom: 8px; background: #2e86ab; }
+  #drive { position: absolute; right: 16px; bottom: 16px; text-align: right; }
+  #speed { font-size: 34px; font-weight: 800; text-shadow: 0 2px 8px rgba(0,0,0,.8); }
+  #car-name { font-size: 15px; color: var(--muted, #c9bfae); }
+  #ammo { font-size: 18px; font-weight: 700; margin-top: 4px; text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+  #ticker { position: absolute; left: 16px; top: 90px; font-size: 13px; color: #ffd9a0;
+    text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; display: none; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; }
+  #crosshair::before { left: 10px; top: 0; width: 2px; height: 22px; }
+  #crosshair::after { left: 0; top: 10px; width: 22px; height: 2px; }
+  #hitmarker { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px;
+    opacity: 0; transition: opacity .15s; }
+  #hitmarker.show { opacity: 1; }
+  #hitmarker::before, #hitmarker::after { content: ""; position: absolute; left: 13px; top: 0; width: 4px; height: 30px; background: #ff4a2a; }
+  #hitmarker::before { transform: rotate(45deg); }
+  #hitmarker::after { transform: rotate(-45deg); }
+  #vignette { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity .2s;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(255,30,10,.55) 100%); }
+  #vignette.hurt { opacity: 1; }
+  #flash { position: fixed; inset: 0; pointer-events: none; background: #fff; opacity: 0; }
+  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    flex-direction: column; text-align: center; z-index: 10;
+    background: linear-gradient(180deg, rgba(20,24,34,.25) 0%, rgba(20,24,34,.78) 78%); }
+  .screen.on { display: flex; }
+  .screen h1 { font-size: 64px; margin: 0; letter-spacing: 6px; color: #ffd9a0;
+    text-shadow: 0 4px 24px rgba(0,0,0,.8); }
+  .screen h1 span { color: #ff6b4a; }
+  .screen p { font-size: 17px; max-width: 560px; color: #f4efe6; text-shadow: 0 2px 8px rgba(0,0,0,.9); }
+  .menu { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+  .menu button { pointer-events: auto; font-size: 18px; padding: 12px 34px; border: none; border-radius: 10px;
+    background: #ff6b4a; color: #fff; font-weight: 700; cursor: pointer; min-width: 260px; }
+  .menu button.secondary { background: rgba(20,24,34,.72); color: #f4efe6; border: 1px solid #f4efe6; }
+  .menu button:hover { filter: brightness(1.15); }
+  .menu button:disabled { opacity: .45; cursor: default; }
+  #howto { display: none; max-width: 560px; text-align: left; font-size: 15px; line-height: 1.6;
+    background: rgba(20,24,34,.85); border-radius: 10px; padding: 16px 22px; margin-top: 16px; }
+  #howto.on { display: block; }
+  #help { position: absolute; bottom: 12px; right: 16px; font-size: 12px; color: var(--muted, #c9bfae);
+    text-shadow: 0 1px 4px rgba(0,0,0,.8); }
 </style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/three.module.min.js" } }
+</script>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
+<canvas id="game" tabindex="0" aria-label="Solmar City: an open-world crime game. Drive, steal cars, outrun the police and finish 8 story missions."></canvas>
 <p id="status" role="status" aria-live="polite"></p>
+<div id="vignette"></div>
+<div id="flash"></div>
+
+<div id="hud">
+  <div id="wanted" aria-label="Wanted level"></div>
+  <div id="cash"></div>
+  <div id="clock"></div>
+  <div id="objective"></div>
+  <div id="banner"></div>
+  <div id="ticker"></div>
+  <div id="crosshair"></div>
+  <div id="hitmarker"></div>
+  <div id="stats">
+    <canvas id="minimap" width="170" height="170"></canvas>
+    <div id="health-bar"><div id="health-fill"></div></div>
+    <div id="armour-bar"><div id="armour-fill"></div></div>
+    <div id="health-text"></div>
+  </div>
+  <div id="drive">
+    <div id="speed"></div>
+    <div id="car-name"></div>
+    <div id="ammo"></div>
+  </div>
+  <div id="help">WASD move/drive &middot; E enter car &middot; Space jump/handbrake &middot; Click shoot &middot; F punch &middot; R reload &middot; 1-4 weapons &middot; P pause &middot; M mute</div>
+</div>
+
+<div id="screen-title" class="screen on">
+  <h1>SOLMAR <span>CITY</span></h1>
+  <p>Sun-soaked streets, fast cars, and a debt to pay. Juno Reyes owes fixer Iris Delgado — work it off across 8 story missions, steal what you need, and stay ahead of the Solmar police.</p>
+  <div class="menu">
+    <button id="btn-continue">Continue</button>
+    <button id="btn-new">New Game</button>
+    <button id="btn-howto" class="secondary">How to Play</button>
+    <button id="btn-missions" class="secondary">Missions</button>
+  </div>
+  <div id="howto">
+    <b>On foot:</b> WASD move, Shift sprint, Space jump, mouse to look, E enter a car, F punch, click to shoot, R reload, 1–4 switch weapons.<br>
+    <b>Driving:</b> W/S throttle and brake, A/D steer, Space handbrake, Shift boost in chases, E exit.<br>
+    <b>Heat:</b> stealing cars, hitting people and shooting raise your wanted stars. Hide out of sight to cool off, or pay $150 at the Tune-Up Garage. Busted or wasted means the hospital — and lost cash.<br>
+    <b>Money:</b> missions, taxi fares, packages ($50 each, $500 for all 20). Spend it at Harbor Hardware (weapons) and Marina Motors (cars).
+  </div>
+  <p id="title-stats"></p>
+</div>
+
+<div id="screen-pause" class="screen">
+  <h1>PAUSED</h1>
+  <div class="menu">
+    <button id="btn-resume">Resume</button>
+    <button id="btn-restart" class="secondary">Restart Mission</button>
+    <button id="btn-quit" class="secondary">Save &amp; Quit to Menu</button>
+  </div>
+</div>
+
+<div id="screen-over" class="screen">
+  <h1 id="over-title">BUSTED</h1>
+  <p id="over-text"></p>
+  <div class="menu">
+    <button id="btn-again">Keep Playing</button>
+    <button id="btn-menu" class="secondary">Main Menu</button>
+  </div>
+</div>
+
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>
